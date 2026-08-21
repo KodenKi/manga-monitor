@@ -1,0 +1,202 @@
+{% extends "base.html" %}
+{% block content %}
+
+<section class="card dashboard">
+  <div class="stat">
+    <span class="stat-value">{{ stats.total_groups }}</span>
+    <span class="stat-label">mangás</span>
+  </div>
+  <div class="stat">
+    <span class="stat-value">{{ stats.active_sources }}/{{ stats.total_sources }}</span>
+    <span class="stat-label">fontes ativas</span>
+  </div>
+  <div class="stat">
+    <span class="stat-value">{{ stats.chapters_this_week }}</span>
+    <span class="stat-label">capítulos essa semana</span>
+  </div>
+  <div class="stat {{ 'stat-warning' if stats.failing_sources > 0 }}">
+    <span class="stat-value">{{ stats.failing_sources }}</span>
+    <span class="stat-label">fonte(s) com problema</span>
+  </div>
+</section>
+
+<section class="card">
+  <details class="collapsible">
+    <summary><strong>+ Cadastrar mangá novo</strong> (grupo que ainda não existe)</summary>
+    <p class="hint">
+      Já tem esse mangá cadastrado? É mais rápido usar o campo de adicionar
+      fonte que aparece dentro da seção daquele grupo, mais abaixo — só nome
+      e link, sem precisar redigitar grupo nem webhook.
+    </p>
+    <form method="post" action="{{ url_for('add_manga') }}" class="form-grid">
+      <label>Nome da fonte
+        <input type="text" name="name" required placeholder="Ex: One Piece (SiteA)">
+      </label>
+      <label>Grupo (mangá)
+        <input type="text" name="group_name" placeholder="Ex: One Piece" list="existing-groups">
+    </label>
+    <datalist id="existing-groups">
+      {% for group_name in grouped.keys() %}
+        <option value="{{ group_name }}">
+      {% endfor %}
+    </datalist>
+    <label>URL da página de capítulos
+      <input type="url" name="url" required placeholder="https://site.com/manga/one-piece">
+    </label>
+    <label>Seletor CSS (opcional)
+      <input type="text" name="selector" placeholder="Ex: .chapter-list">
+    </label>
+    <label>Regex do número do capítulo (opcional)
+      <input type="text" name="chapter_regex" placeholder="Deixe em branco pra usar o padrão">
+    </label>
+    <label class="checkbox-label">
+      <input type="checkbox" name="js_render">
+      Forçar uso de navegador (avançado)
+    </label>
+    <label>Checar a cada (horas)
+      <input type="number" step="0.5" min="0.5" name="interval_hours" value="5">
+    </label>
+    <label>Ou horário fixo diário (opcional)
+      <input type="time" name="check_time">
+    </label>
+    <label>Webhook do Discord deste grupo (opcional)
+      <input type="url" name="group_webhook" placeholder="Deixe em branco pra usar o webhook geral">
+    </label>
+    <button type="submit">Adicionar</button>
+  </form>
+  <p class="hint">
+    <strong>Horário fixo:</strong> se preencher esse campo (ex: 17:00), o app ignora
+    o "Checar a cada" e passa a checar essa fonte uma vez por dia, sempre nesse
+    horário (com margem de até 15 min, que é o intervalo do relógio interno). Deixe
+    em branco pra usar o modo "a cada X horas" contando da última checagem.
+  </p>
+  <p class="hint">
+    <strong>Webhook por grupo:</strong> se quiser que cada mangá avise num canal
+    diferente do Discord (ex: um canal "One Piece", outro "Dandadan"), crie um
+    webhook separado pra cada canal e cole aqui na hora de cadastrar a primeira
+    fonte daquele grupo. Se deixar em branco, usa o webhook geral configurado em
+    "Configurações".
+  </p>
+  <p class="hint">
+    <strong>Grupo:</strong> use o mesmo nome de grupo em várias fontes do mesmo mangá
+    (ex: um site A e um site B de One Piece). Assim que qualquer uma delas detectar
+    um capítulo novo e te avisar, as outras do mesmo grupo não vão notificar de novo
+    sobre esse mesmo capítulo — só sobre o próximo. Se deixar em branco, o grupo vira
+    o próprio nome da fonte (ou seja, monitorada sozinha).
+  </p>
+  <p class="hint">
+    <strong>Seletor CSS:</strong> restringe a checagem a um trecho da página (ex: só a
+    lista de capítulos), evitando avisos falsos por causa de banners, contador de
+    visitas etc.
+  </p>
+  <p class="hint">
+    <strong>Detecção de JavaScript:</strong> o app já detecta sozinho, a cada
+    checagem, se o site precisa de navegador (ex: MangaPlus) — não precisa
+    marcar nada. Ele tenta o jeito simples primeiro; se perceber que o
+    conteúdo veio vazio ou insuficiente, muda pro navegador headless
+    automaticamente e passa a usar esse modo direto nas próximas vezes. Só
+    marque "Forçar uso de navegador" manualmente se, por algum motivo, a
+    detecção automática errar pra algum site específico.
+  </p>
+  </details>
+</section>
+
+{% if not grouped %}
+  <section class="card"><p class="hint">Nenhum mangá cadastrado ainda.</p></section>
+{% else %}
+  {% for group_name, mangas in grouped.items() %}
+  {% set g = groups.get(group_name) %}
+  {% set failing_count = mangas | selectattr("consecutive_failures", "greaterthan", 0) | list | length %}
+  <section class="card group-card-static">
+    <div class="group-header">
+      <span class="group-name">{{ group_name }}</span>
+      <span class="group-meta">{{ mangas|length }} fonte(s)</span>
+      {% if g and g.last_notified_chapter %}
+        <span class="badge">último notificado: cap. {{ "%g"|format(g.last_notified_chapter) }}</span>
+      {% endif %}
+      {% if g and g.webhook_url %}
+        <span class="badge">webhook próprio</span>
+      {% endif %}
+      {% if failing_count > 0 %}
+        <span class="badge badge-warning">⚠️ {{ failing_count }} com problema</span>
+      {% endif %}
+    </div>
+
+    <details class="collapsible quick-add">
+      <summary>+ Adicionar fonte a este grupo</summary>
+      <form method="post" action="{{ url_for('add_manga') }}" class="inline-add-form">
+        <input type="hidden" name="group_name" value="{{ group_name }}">
+        <input type="text" name="name" required placeholder="Nome da fonte (ex: {{ group_name }} SiteB)">
+        <input type="url" name="url" required placeholder="Link da página de capítulos">
+        <input type="time" name="check_time" class="short-input" title="Horário fixo diário (ex: 17:00)">
+        <button type="submit">Adicionar</button>
+      </form>
+      <p class="hint">
+        O horário fixo é opcional — deixe em branco pra usar o padrão de
+        checagem a cada 5h. O webhook do Discord já é o deste grupo
+        automaticamente, não precisa preencher de novo.
+      </p>
+    </details>
+
+    <details class="collapsible group-table-toggle">
+      <summary>Ver fontes e configurações ({{ mangas|length }})</summary>
+
+      <details class="collapsible">
+        <summary>⚙️ Webhook deste grupo</summary>
+        <form method="post" action="{{ url_for('group_webhook') }}" class="inline-webhook-form">
+          <input type="hidden" name="group_name" value="{{ group_name }}">
+          <input type="url" name="webhook_url" value="{{ g.webhook_url if g else '' }}"
+                 placeholder="Webhook do Discord deste grupo (em branco = usar o geral)">
+          <button type="submit">Salvar</button>
+          <button type="submit" formaction="{{ url_for('test_group_webhook') }}" class="btn-secondary">Testar</button>
+        </form>
+      </details>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Fonte</th>
+            <th>Intervalo</th>
+            <th>Últ. checagem</th>
+            <th>Cap. detectado</th>
+            <th>Status</th>
+            <th>Ações</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for m in mangas %}
+          <tr class="{{ 'inactive' if not m.active }}">
+            <td>
+              <a href="{{ m.url }}" target="_blank" rel="noopener">{{ m.name }}</a>
+              {% if m.js_render or m.js_detected %} <span class="badge">{{ "JS forçado" if m.js_render else "JS detectado" }}</span>{% endif %}
+              {% if m.consecutive_failures and m.consecutive_failures > 0 %}
+                <span class="badge badge-warning" title="{{ m.last_error or '' }}">⚠️ {{ m.consecutive_failures }} falha(s)</span>
+              {% endif %}
+            </td>
+            <td>{{ m.check_time ~ " diário" if m.check_time else (m.interval_hours ~ "h") }}</td>
+            <td>{{ m.last_checked or "—" }}</td>
+            <td>{{ "%g"|format(m.last_chapter_seen) if m.last_chapter_seen is not none else "—" }}</td>
+            <td>{{ "Ativo" if m.active else "Pausado" }}</td>
+            <td class="actions">
+              <form method="post" action="{{ url_for('check_now', manga_id=m.id) }}">
+                <button type="submit">Checar</button>
+              </form>
+              <a href="{{ url_for('edit_manga', manga_id=m.id) }}" class="btn-link">Editar</a>
+              <form method="post" action="{{ url_for('toggle_manga', manga_id=m.id) }}">
+                <button type="submit">{{ "Pausar" if m.active else "Retomar" }}</button>
+              </form>
+              <form method="post" action="{{ url_for('delete_manga', manga_id=m.id) }}"
+                    onsubmit="return confirm('Remover {{ m.name }}?');">
+                <button type="submit" class="danger">Remover</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </details>
+  </section>
+  {% endfor %}
+{% endif %}
+
+{% endblock %}
