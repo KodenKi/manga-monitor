@@ -175,7 +175,7 @@
             </td>
             <td>{{ m.check_time ~ " diário" if m.check_time else (m.interval_hours ~ "h") }}</td>
             <td>{{ m.last_checked or "—" }}</td>
-            <td>{{ "%g"|format(m.last_chapter_seen) if m.last_chapter_seen is not none else "—" }}</td>
+            <td {% if m.last_chapter_seen is none and m.last_error %}title="{{ m.last_error }}"{% endif %}>{{ "%g"|format(m.last_chapter_seen) if m.last_chapter_seen is not none else "—" }}</td>
             <td>{{ "Ativo" if m.active else "Pausado" }}</td>
             <td class="actions">
               <form method="post" action="{{ url_for('check_now', manga_id=m.id) }}">

@@ -332,14 +332,45 @@ def fetch_text_simple(url, selector, pattern=None):
 def fetch_text_js(url, selector, pattern=None):
     """Renderiza a página com um navegador headless antes de extrair o texto.
     Necessário pra sites que montam a lista de capítulos via JavaScript
-    (ex: MangaPlus) ou que bloqueiam requisições simples (bot detection)."""
+    (ex: MangaPlus) ou que bloqueiam requisições simples (bot detection).
+
+    Inclui alguns disfarces básicos contra detecção de automação, já que
+    sistemas anti-bot mais chatos (Cloudflare e afins) costumam checar
+    sinais óbvios de headless Chromium (navigator.webdriver, plugins
+    vazios, etc.) antes mesmo de olhar o conteúdo."""
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(args=["--no-sandbox", "--disable-dev-shm-usage"])
+        browser = p.chromium.launch(
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+            ]
+        )
         try:
-            page = browser.new_page(user_agent=HEADERS["User-Agent"])
-            page.goto(url, wait_until="networkidle", timeout=30000)
+            page = browser.new_page(
+                user_agent=HEADERS["User-Agent"],
+                viewport={"width": 1366, "height": 900},
+                locale="pt-BR",
+            )
+            # Esconde os sinais mais óbvios de que é um navegador automatizado.
+            page.add_init_script(
+                """
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                Object.defineProperty(navigator, 'languages', { get: () => ['pt-BR', 'pt', 'en'] });
+                window.chrome = { runtime: {} };
+                """
+            )
+            try:
+                page.goto(url, wait_until="networkidle", timeout=30000)
+            except Exception:
+                # Alguns sites nunca ficam "ociosos" de rede (comentários,
+                # analytics, polling) — tenta de novo só esperando o HTML
+                # carregar, sem depender da rede ficar quieta.
+                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(3000)
             if selector:
                 try:
                     page.wait_for_selector(selector, timeout=10000)
@@ -487,6 +518,16 @@ def check_manga(manga_id):
     chapter_num = extract_chapter_number(text, pattern)
     is_first_check = manga["last_hash"] is None
     page_changed = (not is_first_check) and new_hash != manga["last_hash"]
+
+    # Diagnóstico: se mesmo depois de tudo (seletor/JS) não achou nenhum
+    # número de capítulo, guarda uma prévia do que foi recebido — ajuda a
+    # entender se o problema é bloqueio anti-bot, seletor errado, etc.
+    if chapter_num is None:
+        preview = (text or "").strip()[:200]
+        conn.execute(
+            "UPDATE mangas SET last_error = ? WHERE id = ?",
+            (f"Nenhum número de capítulo encontrado. Prévia do conteúdo recebido: {preview!r}", manga_id),
+        )
 
     if is_first_check:
         if chapter_num is not None:

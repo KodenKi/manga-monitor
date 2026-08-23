@@ -235,6 +235,31 @@ checkbox avançado **"Forçar uso de navegador"** (no cadastro ou na edição
 da fonte) pula a detecção e sempre usa o navegador headless pra aquela
 fonte.
 
+## Sites com proteção anti-bot mais forte
+
+Alguns sites usam proteção que detecta especificamente quando é um
+navegador automatizado (mesmo com Playwright/Chromium headless) — não só
+"tem JavaScript ou não". Pra aumentar a chance de passar por isso, o
+navegador headless do app:
+
+- Esconde os sinais mais óbvios de automação (`navigator.webdriver`,
+  plugins vazios, etc.)
+- Usa um idioma e tamanho de tela mais realistas
+- Tenta esperar a rede ficar quieta, mas se a página nunca "sossega"
+  (sites com comentários/analytics que ficam fazendo requisições sem
+  parar), tenta de novo só esperando o HTML carregar, com uma pausa extra
+
+Isso ajuda bastante, mas alguns sites com proteção muito agressiva
+(Cloudflare em modo mais estrito, por exemplo) podem continuar
+bloqueando mesmo assim — não é algo que dá pra garantir 100% de contorno.
+
+**Diagnóstico:** quando o app não consegue achar nenhum número de
+capítulo (mesmo com seletor e navegador), a coluna "Cap. detectado" fica
+com traço (—) e passa a guardar uma prévia do que foi recebido — passe o
+mouse em cima do traço pra ver. Isso ajuda a identificar se o problema é
+bloqueio, seletor errado, ou site fora do ar, sem precisar ficar
+adivinhando.
+
 ## Notificações no Discord
 
 ### Configurar
