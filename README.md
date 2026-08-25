@@ -256,9 +256,11 @@ bloqueando mesmo assim — não é algo que dá pra garantir 100% de contorno.
 **Espera extra pra telas de verificação:** alguns sites mostram uma tela
 tipo "Um momento... verificando seu navegador" por alguns segundos antes
 de liberar o conteúdo de verdade (comum em proteções tipo Cloudflare). O
-app agora detecta esse tipo de tela e espera mais um pouco (até 3 vezes,
-uns 4 segundos cada), tentando pegar o conteúdo de novo, em vez de
-desistir na hora que vê essa tela.
+app detecta esse tipo de tela e espera bem mais (até 30 segundos no
+total, tentando de novo a cada 5s), em vez de desistir na hora que vê
+essa tela. Mesmo assim, proteções mais sofisticadas (que analisam
+comportamento do navegador, não só tempo de espera) podem continuar
+bloqueando — não é algo que dá pra garantir 100% de contorno.
 
 **Diagnóstico:** quando o app não consegue achar nenhum número de
 capítulo (mesmo com seletor e navegador), a coluna "Cap. detectado" fica

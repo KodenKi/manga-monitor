@@ -384,8 +384,12 @@ def fetch_text_js(url, selector, pattern=None):
             # pouco mais e tenta pegar o conteúdo de novo (algumas vezes),
             # em vez de desistir na hora.
             attempts = 0
-            while _looks_like_challenge_page(html) and attempts < 3:
-                page.wait_for_timeout(4000)
+            while _looks_like_challenge_page(html) and attempts < 6:
+                page.wait_for_timeout(5000)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=4000)
+                except Exception:
+                    pass
                 html = page.content()
                 attempts += 1
         finally:
