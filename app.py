@@ -377,11 +377,40 @@ def fetch_text_js(url, selector, pattern=None):
                 except Exception:
                     pass  # segue mesmo se o seletor não aparecer a tempo
             html = page.content()
+
+            # Alguns serviços de proteção (tipo Cloudflare) mostram uma tela
+            # de "verificação de segurança" por alguns segundos antes de
+            # liberar o conteúdo real. Se detectar essa tela, espera um
+            # pouco mais e tenta pegar o conteúdo de novo (algumas vezes),
+            # em vez de desistir na hora.
+            attempts = 0
+            while _looks_like_challenge_page(html) and attempts < 3:
+                page.wait_for_timeout(4000)
+                html = page.content()
+                attempts += 1
         finally:
             browser.close()
 
     soup = BeautifulSoup(html, "html.parser")
     return _extract_from_soup(soup, selector, pattern)
+
+
+# Frases típicas de telas de "verificação de segurança" (Cloudflare e afins)
+# que aparecem temporariamente antes do conteúdo real da página.
+_CHALLENGE_PAGE_MARKERS = (
+    "verificação de segurança",
+    "verificando seu navegador",
+    "checking your browser",
+    "just a moment",
+    "um momento...",
+    "ddos protection by",
+    "attention required",
+)
+
+
+def _looks_like_challenge_page(html):
+    lower = html.lower()
+    return any(marker in lower for marker in _CHALLENGE_PAGE_MARKERS)
 
 
 # Sinais de que a página só mostra o conteúdo real depois de rodar JavaScript
