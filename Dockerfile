@@ -5,10 +5,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Instala o navegador Chromium usado pelo Playwright pra renderizar sites
-# com JavaScript (ex: MangaPlus). Isso deixa a imagem maior (~300-400MB) e
-# o build mais demorado na primeira vez.
+# Instala o navegador Chromium usado pelo Playwright/patchright pra
+# renderizar sites com JavaScript (ex: MangaPlus). Isso deixa a imagem
+# maior (~300-400MB por navegador) e o build mais demorado na primeira vez.
 RUN playwright install --with-deps chromium
+RUN python -m patchright install --with-deps chromium
 
 COPY . .
 

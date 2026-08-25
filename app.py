@@ -338,7 +338,14 @@ def fetch_text_js(url, selector, pattern=None):
     sistemas anti-bot mais chatos (Cloudflare e afins) costumam checar
     sinais óbvios de headless Chromium (navigator.webdriver, plugins
     vazios, etc.) antes mesmo de olhar o conteúdo."""
-    from playwright.sync_api import sync_playwright
+    try:
+        # patchright é um "playwright disfarçado" — mesma API, mas com
+        # correções em vários detalhes que entregam que é um navegador
+        # automatizado, dando mais chance de passar por proteções tipo
+        # Cloudflare mais chatas.
+        from patchright.sync_api import sync_playwright
+    except ImportError:
+        from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:
         browser = p.chromium.launch(

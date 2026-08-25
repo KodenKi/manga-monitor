@@ -240,18 +240,27 @@ fonte.
 Alguns sites usam proteção que detecta especificamente quando é um
 navegador automatizado (mesmo com Playwright/Chromium headless) — não só
 "tem JavaScript ou não". Pra aumentar a chance de passar por isso, o
-navegador headless do app:
+app usa o **patchright** (uma versão do Playwright com várias correções
+nos detalhes que costumam entregar que é automação) em vez do Playwright
+puro, além de:
 
-- Esconde os sinais mais óbvios de automação (`navigator.webdriver`,
+- Esconder sinais adicionais de automação (`navigator.webdriver`,
   plugins vazios, etc.)
-- Usa um idioma e tamanho de tela mais realistas
-- Tenta esperar a rede ficar quieta, mas se a página nunca "sossega"
+- Usar um idioma e tamanho de tela mais realistas
+- Tentar esperar a rede ficar quieta, mas se a página nunca "sossega"
   (sites com comentários/analytics que ficam fazendo requisições sem
   parar), tenta de novo só esperando o HTML carregar, com uma pausa extra
 
 Isso ajuda bastante, mas alguns sites com proteção muito agressiva
 (Cloudflare em modo mais estrito, por exemplo) podem continuar
 bloqueando mesmo assim — não é algo que dá pra garantir 100% de contorno.
+Se o patchright não estiver disponível por algum motivo, o app volta a
+usar o Playwright puro automaticamente (sem quebrar nada).
+
+**Nota sobre o build:** com o patchright, a imagem baixa um segundo
+navegador Chromium (além do que o Playwright já baixava), deixando o
+build ainda mais demorado na primeira vez — é o preço de ter mais chance
+de passar por proteções mais chatas.
 
 **Espera extra pra telas de verificação:** alguns sites mostram uma tela
 tipo "Um momento... verificando seu navegador" por alguns segundos antes
