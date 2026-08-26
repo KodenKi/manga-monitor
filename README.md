@@ -254,13 +254,15 @@ puro, além de:
 Isso ajuda bastante, mas alguns sites com proteção muito agressiva
 (Cloudflare em modo mais estrito, por exemplo) podem continuar
 bloqueando mesmo assim — não é algo que dá pra garantir 100% de contorno.
-Se o patchright não estiver disponível por algum motivo, o app volta a
-usar o Playwright puro automaticamente (sem quebrar nada).
+A instalação do navegador do patchright no build é **opcional** — se
+falhar por qualquer motivo (ou se o patchright não estiver disponível em
+tempo de execução), o app detecta isso automaticamente e usa o
+Playwright normal no lugar, sem travar nem quebrar nada.
 
-**Nota sobre o build:** com o patchright, a imagem baixa um segundo
-navegador Chromium (além do que o Playwright já baixava), deixando o
-build ainda mais demorado na primeira vez — é o preço de ter mais chance
-de passar por proteções mais chatas.
+**Nota sobre o build:** quando a instalação do patchright dá certo, a
+imagem baixa um segundo navegador Chromium (além do que o Playwright já
+baixava), deixando o build ainda mais demorado na primeira vez — é o
+preço de ter mais chance de passar por proteções mais chatas.
 
 **Espera extra pra telas de verificação:** alguns sites mostram uma tela
 tipo "Um momento... verificando seu navegador" por alguns segundos antes

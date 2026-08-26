@@ -329,25 +329,10 @@ def fetch_text_simple(url, selector, pattern=None):
     return _extract_from_soup(soup, selector, pattern)
 
 
-def fetch_text_js(url, selector, pattern=None):
-    """Renderiza a página com um navegador headless antes de extrair o texto.
-    Necessário pra sites que montam a lista de capítulos via JavaScript
-    (ex: MangaPlus) ou que bloqueiam requisições simples (bot detection).
-
-    Inclui alguns disfarces básicos contra detecção de automação, já que
-    sistemas anti-bot mais chatos (Cloudflare e afins) costumam checar
-    sinais óbvios de headless Chromium (navigator.webdriver, plugins
-    vazios, etc.) antes mesmo de olhar o conteúdo."""
-    try:
-        # patchright é um "playwright disfarçado" — mesma API, mas com
-        # correções em vários detalhes que entregam que é um navegador
-        # automatizado, dando mais chance de passar por proteções tipo
-        # Cloudflare mais chatas.
-        from patchright.sync_api import sync_playwright
-    except ImportError:
-        from playwright.sync_api import sync_playwright
-
-    with sync_playwright() as p:
+def _render_with_browser(sync_playwright_factory, url, selector, pattern):
+    """Faz o trabalho de verdade: abre o navegador, navega, espera telas de
+    verificação liberarem, e devolve o HTML final da página."""
+    with sync_playwright_factory() as p:
         browser = p.chromium.launch(
             args=[
                 "--no-sandbox",
@@ -387,9 +372,9 @@ def fetch_text_js(url, selector, pattern=None):
 
             # Alguns serviços de proteção (tipo Cloudflare) mostram uma tela
             # de "verificação de segurança" por alguns segundos antes de
-            # liberar o conteúdo real. Se detectar essa tela, espera um
-            # pouco mais e tenta pegar o conteúdo de novo (algumas vezes),
-            # em vez de desistir na hora.
+            # liberar o conteúdo real. Se detectar essa tela, espera bem
+            # mais (até 30s no total) e tenta pegar o conteúdo de novo, em
+            # vez de desistir na hora.
             attempts = 0
             while _looks_like_challenge_page(html) and attempts < 6:
                 page.wait_for_timeout(5000)
@@ -401,6 +386,28 @@ def fetch_text_js(url, selector, pattern=None):
                 attempts += 1
         finally:
             browser.close()
+    return html
+
+
+def fetch_text_js(url, selector, pattern=None):
+    """Renderiza a página com um navegador headless antes de extrair o texto.
+    Necessário pra sites que montam a lista de capítulos via JavaScript
+    (ex: MangaPlus) ou que bloqueiam requisições simples (bot detection).
+
+    Tenta usar o patchright (versão do Playwright com correções
+    anti-detecção) primeiro; se ele não estiver instalado OU falhar por
+    qualquer motivo (ex: navegador dele não foi baixado no build), cai de
+    volta pro Playwright normal automaticamente, sem quebrar a checagem."""
+    html = None
+    try:
+        from patchright.sync_api import sync_playwright as patchright_sync
+        html = _render_with_browser(patchright_sync, url, selector, pattern)
+    except Exception as e:
+        print(f"[fetch_text_js] patchright indisponível ou falhou ({e}); usando playwright normal.")
+
+    if html is None:
+        from playwright.sync_api import sync_playwright
+        html = _render_with_browser(sync_playwright, url, selector, pattern)
 
     soup = BeautifulSoup(html, "html.parser")
     return _extract_from_soup(soup, selector, pattern)
