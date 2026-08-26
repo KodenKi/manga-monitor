@@ -239,30 +239,37 @@ fonte.
 
 Alguns sites usam proteção que detecta especificamente quando é um
 navegador automatizado (mesmo com Playwright/Chromium headless) — não só
-"tem JavaScript ou não". Pra aumentar a chance de passar por isso, o
-app usa o **patchright** (uma versão do Playwright com várias correções
-nos detalhes que costumam entregar que é automação) em vez do Playwright
-puro, além de:
+"tem JavaScript ou não". Pra aumentar bastante a chance de passar por
+isso, o app usa o **patchright** (versão do Playwright com correções
+anti-detecção) seguindo a configuração recomendada pela documentação
+dele, que é bem diferente do modo "padrão":
 
-- Esconder sinais adicionais de automação (`navigator.webdriver`,
-  plugins vazios, etc.)
-- Usar um idioma e tamanho de tela mais realistas
-- Tentar esperar a rede ficar quieta, mas se a página nunca "sossega"
-  (sites com comentários/analytics que ficam fazendo requisições sem
-  parar), tenta de novo só esperando o HTML carregar, com uma pausa extra
+- **Google Chrome de verdade** instalado no container (não o Chromium
+  genérico que o Playwright baixa por padrão) — sites de proteção
+  costumam reconhecer a "impressão digital" do Chromium comum como sinal
+  de automação.
+- **Sem modo headless** — o Chrome roda "com interface" mesmo dentro do
+  servidor, usando uma tela virtual (Xvfb) já que não tem monitor físico.
+  Isso também é mais parecido com um navegador de verdade que o modo
+  headless costuma denunciar.
+- **Sem user-agent nem cabeçalhos customizados** — a própria documentação
+  do patchright recomenda não mexer nisso manualmente, já que
+  inconsistências entre o que se diz ser e o que realmente é costumam
+  ser o que entrega a automação, não a ausência de disfarce.
 
 Isso ajuda bastante, mas alguns sites com proteção muito agressiva
-(Cloudflare em modo mais estrito, por exemplo) podem continuar
-bloqueando mesmo assim — não é algo que dá pra garantir 100% de contorno.
-A instalação do navegador do patchright no build é **opcional** — se
-falhar por qualquer motivo (ou se o patchright não estiver disponível em
-tempo de execução), o app detecta isso automaticamente e usa o
-Playwright normal no lugar, sem travar nem quebrar nada.
+podem continuar bloqueando mesmo assim — não é algo que dá pra garantir
+100% de contorno. Se o Chrome/patchright não estiver disponível por
+qualquer motivo (falha na instalação, etc.), o app cai de volta
+automaticamente pro Playwright normal (Chromium headless simples), sem
+travar nem quebrar a checagem.
 
-**Nota sobre o build:** quando a instalação do patchright dá certo, a
-imagem baixa um segundo navegador Chromium (além do que o Playwright já
-baixava), deixando o build ainda mais demorado na primeira vez — é o
-preço de ter mais chance de passar por proteções mais chatas.
+**Nota sobre o build:** essa configuração instala o Google Chrome de
+verdade (além do Chromium do Playwright, mantido como reserva) e
+configura uma tela virtual (Xvfb) pra rodar sem modo headless — isso
+deixa a imagem maior e o build mais demorado que antes. É o preço de ter
+uma chance real de passar por proteções mais chatas, em vez de só um
+disfarce superficial.
 
 **Espera extra pra telas de verificação:** alguns sites mostram uma tela
 tipo "Um momento... verificando seu navegador" por alguns segundos antes
