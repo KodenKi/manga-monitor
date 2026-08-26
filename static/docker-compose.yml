@@ -1,0 +1,19 @@
+version: "3.8"
+services:
+  manga-monitor:
+    build: .
+    container_name: manga-monitor
+    restart: unless-stopped
+    ports:
+      - "5050:5050"
+    volumes:
+      - manga-data:/data
+    environment:
+      - DB_PATH=/data/mangas.db
+      - SECRET_KEY=troque-esta-chave-em-producao
+      # Descomente e preencha pra usar o Postgres já configurado no servidor
+      # em vez do SQLite. Se DATABASE_URL estiver definida, ela tem prioridade.
+      # - DATABASE_URL=postgresql://usuario:senha@host.docker.internal:5432/manga_monitor
+
+volumes:
+  manga-data:

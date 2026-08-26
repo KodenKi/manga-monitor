@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h2>Editar fonte: {{ manga.name }}</h2>
+  <form method="post" class="form-grid">
+    <label>Nome da fonte
+      <input type="text" name="name" required value="{{ manga.name }}">
+    </label>
+    <label>Grupo (mangá)
+      <input type="text" name="group_name" value="{{ manga.group_name }}">
+    </label>
+    <label>URL da página de capítulos
+      <input type="url" name="url" required value="{{ manga.url }}">
+    </label>
+    <label>Seletor CSS (opcional)
+      <input type="text" name="selector" value="{{ manga.selector or '' }}">
+    </label>
+    <label>Regex do número do capítulo (opcional)
+      <input type="text" name="chapter_regex" value="{{ manga.chapter_regex or '' }}">
+    </label>
+    <label class="checkbox-label">
+      <input type="checkbox" name="js_render" {{ "checked" if manga.js_render }}>
+      Forçar uso de navegador (avançado)
+    </label>
+    <label>Checar a cada (horas)
+      <input type="number" step="0.5" min="0.5" name="interval_hours" value="{{ manga.interval_hours or 5 }}">
+    </label>
+    <label>Ou horário fixo diário (opcional)
+      <input type="time" name="check_time" value="{{ manga.check_time or '' }}">
+    </label>
+    <button type="submit">Salvar alterações</button>
+  </form>
+  <p class="hint"><a href="{{ url_for('index') }}">&larr; Voltar sem salvar</a></p>
+</section>
+{% endblock %}

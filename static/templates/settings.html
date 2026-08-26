@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+
+<section class="card">
+  <h2>Configurações</h2>
+  <p class="hint">
+    Banco de dados em uso: <strong>{{ "Postgres" if using_postgres else "SQLite" }}</strong>
+  </p>
+  <form method="post" class="form-grid">
+    <label>Webhook do Discord
+      <input type="url" name="discord_webhook" value="{{ webhook }}"
+             placeholder="https://discord.com/api/webhooks/...">
+    </label>
+    <label>Cooldown de grupo (horas)
+      <input type="number" step="0.5" min="0" name="group_cooldown_hours" value="{{ cooldown }}">
+    </label>
+    <button type="submit">Salvar</button>
+    <button type="submit" formaction="{{ url_for('test_webhook') }}" class="btn-secondary">Enviar teste</button>
+  </form>
+  <p class="hint">
+    Crie o webhook em: Discord → Configurações do canal → Integrações → Webhooks →
+    Novo Webhook → copiar URL do Webhook.
+  </p>
+  <p class="hint">
+    <strong>Cooldown de grupo:</strong> só é usado quando o app não consegue identificar
+    o número do capítulo automaticamente (ex: sites sem numeração clara). Nesse caso,
+    ele evita notificar de novo pelo mesmo grupo antes desse tempo passar, mesmo que
+    outra fonte também detecte mudança. Quando o número do capítulo é identificado,
+    a comparação é exata e esse cooldown nem entra em ação.
+  </p>
+</section>
+
+{% endblock %}
