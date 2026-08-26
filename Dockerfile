@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # O --with-deps do playwright já cobre as bibliotecas de sistema
 # necessárias; o patchright usa o comando próprio dele, sem esse flag.
 RUN playwright install --with-deps chromium
-RUN patchright install chromium
+RUN python -m patchright install chromium
 
 COPY . .
 
