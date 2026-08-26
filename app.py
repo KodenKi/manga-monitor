@@ -329,102 +329,85 @@ def fetch_text_simple(url, selector, pattern=None):
     return _extract_from_soup(soup, selector, pattern)
 
 
-def _navigate_and_get_html(page, url, selector):
-    """Navega até a URL, espera carregar (e telas de verificação tipo
-    Cloudflare liberarem), devolve o HTML final."""
-    try:
-        page.goto(url, wait_until="networkidle", timeout=30000)
-    except Exception:
-        # Alguns sites nunca ficam "ociosos" de rede (comentários,
-        # analytics, polling) — tenta de novo só esperando o HTML
-        # carregar, sem depender da rede ficar quieta.
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        page.wait_for_timeout(3000)
-    if selector:
-        try:
-            page.wait_for_selector(selector, timeout=10000)
-        except Exception:
-            pass  # segue mesmo se o seletor não aparecer a tempo
-    html = page.content()
-
-    # Alguns serviços de proteção (tipo Cloudflare) mostram uma tela de
-    # "verificação de segurança" por alguns segundos antes de liberar o
-    # conteúdo real. Se detectar essa tela, espera bem mais (até 30s no
-    # total) e tenta pegar o conteúdo de novo, em vez de desistir na hora.
-    attempts = 0
-    while _looks_like_challenge_page(html) and attempts < 6:
-        page.wait_for_timeout(5000)
-        try:
-            page.wait_for_load_state("networkidle", timeout=4000)
-        except Exception:
-            pass
-        html = page.content()
-        attempts += 1
-    return html
-
-
-def _render_with_patchright(url, selector, pattern):
-    """Usa a configuração recomendada pela documentação do patchright pra
-    máxima chance de passar por proteções anti-bot: Chrome de verdade
-    (não Chromium genérico), contexto persistente, SEM modo headless
-    (por isso o container roda com Xvfb/tela virtual) e sem user-agent
-    ou cabeçalhos customizados — mexer nisso manualmente tende a criar
-    inconsistências que entregam a automação, em vez de escondê-la."""
-    import tempfile
-    from patchright.sync_api import sync_playwright
-
-    with sync_playwright() as p:
-        with tempfile.TemporaryDirectory() as user_data_dir:
-            context = p.chromium.launch_persistent_context(
-                user_data_dir,
-                channel="chrome",
-                headless=False,
-                no_viewport=True,
-                args=["--no-sandbox"],
-            )
-            try:
-                page = context.new_page()
-                html = _navigate_and_get_html(page, url, selector)
-            finally:
-                context.close()
-    return html
-
-
-def _render_with_playwright_fallback(url, selector, pattern):
-    """Fallback mais simples (Chromium headless do Playwright normal) pra
-    quando o patchright/Chrome não estiver disponível por algum motivo."""
-    from playwright.sync_api import sync_playwright
-
-    with sync_playwright() as p:
+def _render_with_browser(sync_playwright_factory, url, selector, pattern):
+    """Faz o trabalho de verdade: abre o navegador, navega, espera telas de
+    verificação liberarem, e devolve o HTML final da página."""
+    with sync_playwright_factory() as p:
         browser = p.chromium.launch(
-            args=["--no-sandbox", "--disable-dev-shm-usage"]
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+            ]
         )
         try:
-            page = browser.new_page(user_agent=HEADERS["User-Agent"])
-            html = _navigate_and_get_html(page, url, selector)
+            page = browser.new_page(
+                user_agent=HEADERS["User-Agent"],
+                viewport={"width": 1366, "height": 900},
+                locale="pt-BR",
+            )
+            # Esconde os sinais mais óbvios de que é um navegador automatizado.
+            page.add_init_script(
+                """
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                Object.defineProperty(navigator, 'languages', { get: () => ['pt-BR', 'pt', 'en'] });
+                window.chrome = { runtime: {} };
+                """
+            )
+            try:
+                page.goto(url, wait_until="networkidle", timeout=30000)
+            except Exception:
+                # Alguns sites nunca ficam "ociosos" de rede (comentários,
+                # analytics, polling) — tenta de novo só esperando o HTML
+                # carregar, sem depender da rede ficar quieta.
+                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(3000)
+            if selector:
+                try:
+                    page.wait_for_selector(selector, timeout=10000)
+                except Exception:
+                    pass  # segue mesmo se o seletor não aparecer a tempo
+            html = page.content()
+
+            # Alguns serviços de proteção (tipo Cloudflare) mostram uma tela
+            # de "verificação de segurança" por alguns segundos antes de
+            # liberar o conteúdo real. Se detectar essa tela, espera bem
+            # mais (até 30s no total) e tenta pegar o conteúdo de novo, em
+            # vez de desistir na hora.
+            attempts = 0
+            while _looks_like_challenge_page(html) and attempts < 6:
+                page.wait_for_timeout(5000)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=4000)
+                except Exception:
+                    pass
+                html = page.content()
+                attempts += 1
         finally:
             browser.close()
     return html
 
 
 def fetch_text_js(url, selector, pattern=None):
-    """Renderiza a página com um navegador antes de extrair o texto.
+    """Renderiza a página com um navegador headless antes de extrair o texto.
     Necessário pra sites que montam a lista de capítulos via JavaScript
     (ex: MangaPlus) ou que bloqueiam requisições simples (bot detection).
 
-    Tenta o patchright com Chrome real primeiro (configuração recomendada
-    pela documentação dele pra máxima chance de passar por proteções tipo
-    Cloudflare); se não estiver disponível ou falhar por qualquer motivo,
-    cai de volta pro Playwright normal (Chromium headless), sem quebrar a
-    checagem."""
+    Tenta usar o patchright (versão do Playwright com correções
+    anti-detecção) primeiro; se ele não estiver instalado OU falhar por
+    qualquer motivo (ex: navegador dele não foi baixado no build), cai de
+    volta pro Playwright normal automaticamente, sem quebrar a checagem."""
     html = None
     try:
-        html = _render_with_patchright(url, selector, pattern)
+        from patchright.sync_api import sync_playwright as patchright_sync
+        html = _render_with_browser(patchright_sync, url, selector, pattern)
     except Exception as e:
-        print(f"[fetch_text_js] patchright/chrome indisponível ou falhou ({e}); usando playwright normal.")
+        print(f"[fetch_text_js] patchright indisponível ou falhou ({e}); usando playwright normal.")
 
     if html is None:
-        html = _render_with_playwright_fallback(url, selector, pattern)
+        from playwright.sync_api import sync_playwright
+        html = _render_with_browser(sync_playwright, url, selector, pattern)
 
     soup = BeautifulSoup(html, "html.parser")
     return _extract_from_soup(soup, selector, pattern)
