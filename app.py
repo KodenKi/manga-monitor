@@ -2,6 +2,7 @@ import os
 import re
 import hashlib
 import requests
+import threading
 from functools import wraps
 from datetime import datetime, timedelta
 from flask import Flask, render_template, request, redirect, url_for, flash, session
@@ -13,6 +14,13 @@ from apscheduler.triggers.interval import IntervalTrigger
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 USE_POSTGRES = DATABASE_URL.startswith("postgres")
 SQLITE_PATH = os.environ.get("DB_PATH", "/data/mangas.db")
+
+# Garante que só um navegador headless roda por vez em todo o app — sem
+# isso, o relógio automático (que roda num thread separado) e um clique
+# manual em "Checar agora" podiam abrir navegador ao mesmo tempo,
+# multiplicando o consumo de RAM e arriscando derrubar o servidor
+# inteiro (não só o app) se a máquina tiver pouca memória sobrando.
+_BROWSER_LOCK = threading.Lock()
 
 if USE_POSTGRES:
     import psycopg2
@@ -397,17 +405,22 @@ def fetch_text_js(url, selector, pattern=None):
     Tenta usar o patchright (versão do Playwright com correções
     anti-detecção) primeiro; se ele não estiver instalado OU falhar por
     qualquer motivo (ex: navegador dele não foi baixado no build), cai de
-    volta pro Playwright normal automaticamente, sem quebrar a checagem."""
-    html = None
-    try:
-        from patchright.sync_api import sync_playwright as patchright_sync
-        html = _render_with_browser(patchright_sync, url, selector, pattern)
-    except Exception as e:
-        print(f"[fetch_text_js] patchright indisponível ou falhou ({e}); usando playwright normal.")
+    volta pro Playwright normal automaticamente, sem quebrar a checagem.
 
-    if html is None:
-        from playwright.sync_api import sync_playwright
-        html = _render_with_browser(sync_playwright, url, selector, pattern)
+    Só um navegador roda por vez em todo o app (veja _BROWSER_LOCK) —
+    outras checagens que precisarem de navegador esperam a vez, em vez de
+    abrir tudo em paralelo e estourar a memória do servidor."""
+    with _BROWSER_LOCK:
+        html = None
+        try:
+            from patchright.sync_api import sync_playwright as patchright_sync
+            html = _render_with_browser(patchright_sync, url, selector, pattern)
+        except Exception as e:
+            print(f"[fetch_text_js] patchright indisponível ou falhou ({e}); usando playwright normal.")
+
+        if html is None:
+            from playwright.sync_api import sync_playwright
+            html = _render_with_browser(sync_playwright, url, selector, pattern)
 
     soup = BeautifulSoup(html, "html.parser")
     return _extract_from_soup(soup, selector, pattern)
@@ -891,4 +904,4 @@ scheduler.add_job(check_all_due, IntervalTrigger(minutes=15), id="check_all_due"
 scheduler.start()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5050)))
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5050)), threaded=True)
