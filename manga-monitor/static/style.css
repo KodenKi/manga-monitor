@@ -279,3 +279,17 @@ td a { color: var(--accent); text-decoration: none; }
   margin-bottom: 1.5rem;
   font-size: 0.9rem;
 }
+
+.diag {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.7rem 0.9rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+  max-height: 320px;
+  overflow: auto;
+  user-select: all;
+}

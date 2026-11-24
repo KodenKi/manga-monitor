@@ -5,6 +5,8 @@ import requests
 import threading
 import time
 import secrets
+import json
+from urllib.parse import urlparse, urljoin
 from functools import wraps
 from datetime import datetime, timedelta
 from flask import Flask, render_template, request, redirect, url_for, flash, session
@@ -23,6 +25,11 @@ SQLITE_PATH = os.environ.get("DB_PATH", "/data/mangas.db")
 # multiplicando o consumo de RAM e arriscando derrubar o servidor
 # inteiro (não só o app) se a máquina tiver pouca memória sobrando.
 _BROWSER_LOCK = threading.Lock()
+
+# Guarda, por thread, o que o navegador viu na última página que ele abriu
+# (abas, links, requisições JSON). Só é preenchido quando a lista de
+# capítulos não foi encontrada, pra servir de diagnóstico.
+_debug_local = threading.local()
 
 if USE_POSTGRES:
     import psycopg2
@@ -353,14 +360,222 @@ def auto_detect_chapter_text(soup, pattern):
     return " | ".join(t for _, t in top)
 
 
-def _extract_from_soup(soup, selector, pattern):
+# ---------------------------------------------------------------------------
+# Descoberta automática do número do capítulo (várias estratégias)
+# ---------------------------------------------------------------------------
+# Quando o texto dos links não tem algo como "Cap. 45", o app tenta outras
+# pistas, da mais confiável pra menos confiável:
+#   1. o texto dos links (auto_detect_chapter_text, acima);
+#   2. a URL dos links ("/capitulo-45", "/chapter/45");
+#   3. grupos de links numerados dentro da própria página do mangá
+#      (".../one-piece/1191", ".../one-piece/1190", ...);
+#   4. dados JSON — embutidos no HTML (__NEXT_DATA__ e similares) ou
+#      carregados pela página em segundo plano (XHR/fetch).
+# Só são usadas com o regex padrão: quem definiu um regex próprio controla
+# a extração por conta própria.
+
+_HREF_CHAPTER_RE = re.compile(
+    r"(?:^|[/\-_])(?:cap[ií]tulo|capitulo|chapter|chap|epis[oó]dio|episodio|episode|cap|ch|ep|c)"
+    r"[-_/.]?(\d+(?:[.,]\d+)?)/?$",
+    re.IGNORECASE,
+)
+
+# Pedaços de URL que indicam paginação/listagens, não capítulos.
+_BANNED_PREFIX_PARTS = {
+    "page", "pagina", "p", "pg", "paged", "tag", "tags", "category", "categoria",
+    "author", "autor", "year", "ano", "genre", "genero", "genres", "search",
+    "busca", "user", "users",
+}
+
+_JSON_STRONG_KEYS = {
+    "chapter", "chapternumber", "chapter_number", "chapternum", "chapter_num",
+    "chapterno", "chapter_no", "chap", "numerocapitulo", "numero_capitulo",
+    "capitulo", "cap", "episode", "episodenumber", "episode_number", "episodio",
+}
+_JSON_WEAK_KEYS = {"number", "num", "numero"}
+_JSON_SIBLING_HINTS = {
+    "title", "name", "slug", "created", "createdat", "created_at", "date",
+    "published", "publishedat", "published_at", "updated", "updatedat",
+    "updated_at", "release", "releasedat", "released_at", "url", "uuid", "id",
+}
+
+
+def _is_default_pattern(pattern):
+    return pattern is None or pattern == DEFAULT_CHAPTER_REGEX
+
+
+def _to_number(raw):
+    if isinstance(raw, bool):
+        return None
+    try:
+        n = float(str(raw).replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+    return n if 0 < n < 20000 else None
+
+
+def _number_from_value(v):
+    if isinstance(v, (dict, list, bool)) or v is None:
+        return None
+    if isinstance(v, str):
+        m = re.search(r"\d+(?:[.,]\d+)?", v)
+        return _to_number(m.group()) if m else None
+    return _to_number(v)
+
+
+def _belongs_to_page(path, page_url):
+    """Evita pegar links de OUTROS mangás (barra lateral de 'últimas
+    atualizações', 'populares'...): o link precisa estar debaixo do caminho
+    da página do mangá ou conter o nome (slug) dele."""
+    base = urlparse(page_url or "").path.rstrip("/")
+    if not base:
+        return True
+    low = path.lower()
+    if low.startswith(base.lower() + "/"):
+        return True
+    slug = base.split("/")[-1].lower()
+    return len(slug) >= 4 and slug in low
+
+
+def _chapter_from_hrefs(soup, page_url):
+    keyword_nums = []
+    groups = {}
+    for a in soup.find_all("a", href=True):
+        href = (a.get("href") or "").strip()
+        if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
+            continue
+        path = urlparse(urljoin(page_url or "", href)).path.rstrip("/")
+        if not path or not _belongs_to_page(path, page_url):
+            continue
+        m = _HREF_CHAPTER_RE.search(path)
+        if m:
+            n = _to_number(m.group(1))
+            if n is not None:
+                keyword_nums.append(n)
+            continue
+        prefix, _, last = path.rpartition("/")
+        if last.isdigit():
+            n = _to_number(last)
+            parent = prefix.rsplit("/", 1)[-1].lower()
+            if n is not None and parent not in _BANNED_PREFIX_PARTS:
+                groups.setdefault(prefix, []).append(n)
+    if keyword_nums:
+        return max(keyword_nums), "href com palavra"
+    best = max(groups.values(), key=len, default=None)
+    if best and len(best) >= 3:
+        return max(best), "href numerado"
+    return None
+
+
+def _norm_json_key(k):
+    return re.sub(r"[^a-z_]", "", str(k).lower())
+
+
+def _chapter_list_candidate(items, parent_key):
+    """Se 'items' parece uma lista de capítulos (vários objetos com um campo
+    de número de capítulo), devolve (maior_número, quantos, é_forte)."""
+    dicts = [i for i in items if isinstance(i, dict)]
+    if len(dicts) < 3:
+        return None
+    parent_hint = any(w in _norm_json_key(parent_key) for w in ("chap", "cap", "episod"))
+    for key_set, strong in ((_JSON_STRONG_KEYS, True), (_JSON_WEAK_KEYS, False)):
+        nums = []
+        for d in dicts:
+            for k, v in d.items():
+                if _norm_json_key(k) in key_set:
+                    n = _number_from_value(v)
+                    if n is not None:
+                        nums.append(n)
+                        break
+        if len(nums) < 3 or len(nums) < 0.6 * len(dicts):
+            continue
+        if len(set(nums)) < 0.8 * len(nums):
+            continue  # capítulos não se repetem; isso deve ser outra coisa
+        if not strong and not parent_hint:
+            hints = sum(
+                1 for d in dicts if any(_norm_json_key(k) in _JSON_SIBLING_HINTS for k in d)
+            )
+            if hints < 0.6 * len(dicts):
+                continue
+        return max(nums), len(nums), strong or parent_hint
+    return None
+
+
+def _walk_json(obj, parent_key="", out=None, depth=0):
+    if out is None:
+        out = []
+    if depth > 8 or len(out) > 50:
+        return out
+    if isinstance(obj, list):
+        cand = _chapter_list_candidate(obj, parent_key)
+        if cand:
+            out.append(cand)
+        for item in obj[:200]:
+            if isinstance(item, (dict, list)):
+                _walk_json(item, parent_key, out, depth + 1)
+    elif isinstance(obj, dict):
+        for k, v in obj.items():
+            if isinstance(v, (dict, list)):
+                _walk_json(v, k, out, depth + 1)
+    return out
+
+
+def _chapter_from_json(objects):
+    candidates = []
+    for obj in objects:
+        try:
+            candidates.extend(_walk_json(obj))
+        except RecursionError:
+            continue
+    if not candidates:
+        return None
+    # prefere listas com campo "forte" e, entre elas, a mais longa
+    candidates.sort(key=lambda c: (c[2], c[1]), reverse=True)
+    return candidates[0][0], "dados JSON"
+
+
+def _json_from_scripts(soup):
+    out = []
+    for sc in soup.find_all("script"):
+        typ = (sc.get("type") or "").lower()
+        if "json" not in typ and sc.get("id") != "__NEXT_DATA__":
+            continue
+        text = (sc.string or sc.get_text() or "").strip()
+        if not text or len(text) > 2_000_000:
+            continue
+        try:
+            out.append(json.loads(text))
+        except ValueError:
+            continue
+    return out
+
+
+def discover_chapter_number(soup, json_sources=None, page_url=None):
+    """Tenta achar o número do capítulo mais recente por pistas além do texto
+    dos links. Devolve (numero, como_achou) ou None."""
+    found = _chapter_from_hrefs(soup, page_url)
+    if found:
+        return found
+    objects = list(json_sources or []) + _json_from_scripts(soup)
+    return _chapter_from_json(objects)
+
+
+def _extract_from_soup(soup, selector, pattern, json_sources=None, page_url=None):
     if selector:
         el = soup.select_one(selector)
-        return el.get_text(" ", strip=True) if el else soup.get_text(" ", strip=True)
+        if el is not None:
+            return el.get_text(" ", strip=True)
+        # o seletor não achou nada (site mudou?): segue pra detecção automática
     if pattern:
         auto_text = auto_detect_chapter_text(soup, pattern)
         if auto_text:
             return auto_text
+    if _is_default_pattern(pattern):
+        found = discover_chapter_number(soup, json_sources, page_url)
+        if found:
+            num, how = found
+            print(f"[detect] capítulo {num:g} encontrado via {how}")
+            return f"Capítulo {num:g}"
     return soup.get_text(" ", strip=True)
 
 
@@ -368,7 +583,7 @@ def fetch_text_simple(url, selector, pattern=None):
     resp = requests.get(url, headers=HEADERS, timeout=20)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
-    return _extract_from_soup(soup, selector, pattern)
+    return _extract_from_soup(soup, selector, pattern, None, url)
 
 
 # Textos comuns de abas/botões que escondem a lista de capítulos, tipo
@@ -379,22 +594,26 @@ _CHAPTER_TAB_REGEX = re.compile(
 )
 
 
-def _chapters_already_visible(html, selector, pattern):
-    """Diz se a lista de capítulos já está na página (sem precisar clicar
-    em nada). Com seletor manual, vale se o elemento existe; sem seletor,
-    vale se a auto-detecção acha algum link de capítulo."""
+def _chapters_already_visible(html, selector, pattern, page_url=None, json_sources=None):
+    """Diz se o app já consegue achar a lista/número de capítulos na página
+    (sem precisar clicar em nada)."""
     soup = BeautifulSoup(html, "html.parser")
-    if selector:
-        return soup.select_one(selector) is not None
-    return auto_detect_chapter_text(soup, pattern or DEFAULT_CHAPTER_REGEX) is not None
+    if selector and soup.select_one(selector) is not None:
+        return True
+    if auto_detect_chapter_text(soup, pattern or DEFAULT_CHAPTER_REGEX) is not None:
+        return True
+    if _is_default_pattern(pattern):
+        return discover_chapter_number(soup, json_sources, page_url) is not None
+    return False
 
 
-def _try_open_chapter_tab(page, selector, pattern, max_seconds=8):
+def _try_open_chapter_tab(page, is_visible, max_seconds=8):
     """Alguns sites só mostram a lista de capítulos depois de clicar numa
     aba ou botão (ex: "Capítulos"). Procura esse tipo de aba/botão e
     clica, parando assim que a lista aparecer. Tenta no máximo 2 itens de
     cada tipo e respeita um limite total de tempo, pra não demorar nem
-    mexer demais na página. Devolve True se a lista apareceu."""
+    mexer demais na página. 'is_visible' é uma função que diz se a lista
+    já apareceu. Devolve True se apareceu."""
     deadline = time.monotonic() + max_seconds
     locators = (
         page.get_by_role("tab", name=_CHAPTER_TAB_REGEX),
@@ -416,17 +635,58 @@ def _try_open_chapter_tab(page, selector, pattern, max_seconds=8):
             # dá até ~3s pra lista aparecer depois do clique
             waited = 0
             while waited <= 3000:
-                if _chapters_already_visible(page.content(), selector, pattern):
+                if is_visible():
                     return True
                 page.wait_for_timeout(500)
                 waited += 500
     return False
 
 
+def _build_browser_diagnostic(html, json_responses, tab_clicked):
+    """Resumo curto do que o navegador viu, pra entender por que a lista de
+    capítulos não apareceu sem precisar abrir o Inspecionar na mão."""
+    soup = BeautifulSoup(html, "html.parser")
+
+    def short(t, n=40):
+        t = re.sub(r"\s+", " ", t or "").strip()
+        return t[:n]
+
+    buttons = []
+    for el in soup.select("button, [role=tab], [role=button]"):
+        t = short(el.get_text(" ", strip=True))
+        if t and t not in buttons:
+            buttons.append(t)
+        if len(buttons) >= 15:
+            break
+
+    links = []
+    for a in soup.find_all("a"):
+        t = short(a.get_text(" ", strip=True), 50)
+        if t and re.search(r"\d", t) and t not in links:
+            links.append(t)
+        if len(links) >= 10:
+            break
+
+    json_lines = [f"{status} {u} -> {body}" for u, status, body in json_responses[:8]]
+
+    if tab_clicked is None:
+        click_txt = "não"
+    else:
+        click_txt = f"sim (lista apareceu: {'sim' if tab_clicked else 'não'})"
+    parts = [
+        f"Clique em aba tentado: {click_txt}",
+        f"Abas/botões vistos: {buttons}",
+        f"Links com número: {links}",
+        "Requisições JSON vistas: " + (" || ".join(json_lines) if json_lines else "nenhuma"),
+    ]
+    return "\n".join(parts)
+
+
 def _render_with_browser(sync_playwright_factory, url, selector, pattern):
-    """Faz o trabalho de verdade: abre o navegador, navega, espera telas de
-    verificação liberarem, abre a aba de capítulos se a lista estiver
-    escondida, e devolve o HTML final da página."""
+    """Abre o navegador, navega, espera telas de verificação liberarem,
+    tenta abrir a aba de capítulos / rolar a página se a lista estiver
+    escondida, e devolve (html_final, lista_de_dados_json_vistos)."""
+    json_sources = []
     with sync_playwright_factory() as p:
         browser = p.chromium.launch(
             args=[
@@ -450,6 +710,44 @@ def _render_with_browser(sync_playwright_factory, url, selector, pattern):
                 window.chrome = { runtime: {} };
                 """
             )
+
+            # Anota as requisições internas (XHR/fetch) que a página faz: a
+            # lista de capítulos muitas vezes chega por aí, em JSON.
+            seen_responses = []
+            json_cache = {}  # id(resposta) -> (dados, trecho) ou (None, None)
+
+            def _on_response(resp):
+                try:
+                    if resp.request.resource_type in ("xhr", "fetch") and len(seen_responses) < 40:
+                        seen_responses.append(resp)
+                except Exception:
+                    pass
+
+            page.on("response", _on_response)
+
+            def _json_sources():
+                out = []
+                for resp in list(seen_responses):
+                    key = id(resp)
+                    if key not in json_cache:
+                        data, snippet = None, None
+                        try:
+                            ctype = (resp.headers.get("content-type") or "").lower()
+                            if "json" in ctype:
+                                body = resp.text()
+                                if body and len(body) <= 2_000_000:
+                                    data = json.loads(body)
+                                    snippet = re.sub(r"\s+", " ", body)[:150]
+                        except Exception:
+                            data, snippet = None, None
+                        json_cache[key] = (data, snippet)
+                    if json_cache[key][0] is not None:
+                        out.append(json_cache[key][0])
+                return out
+
+            def _visible_now():
+                return _chapters_already_visible(page.content(), selector, pattern, url, _json_sources())
+
             try:
                 page.goto(url, wait_until="networkidle", timeout=30000)
             except Exception:
@@ -481,21 +779,50 @@ def _render_with_browser(sync_playwright_factory, url, selector, pattern):
                 html = page.content()
                 attempts += 1
 
-            # Se a lista de capítulos não está na página (ex: fica atrás de
-            # uma aba "Capítulos"), tenta abrir essa aba sozinho.
-            if not _looks_like_challenge_page(html) and not _chapters_already_visible(html, selector, pattern):
+            # Se a lista de capítulos ainda não apareceu, tenta (1) abrir a
+            # aba "Capítulos" e (2) rolar a página, pra listas preguiçosas.
+            tab_result = None  # None = não tentou clicar; True/False = resultado
+            if not _looks_like_challenge_page(html) and not _visible_now():
                 try:
-                    if _try_open_chapter_tab(page, selector, pattern):
-                        html = page.content()
+                    tab_result = _try_open_chapter_tab(page, _visible_now)
                 except Exception as e:
+                    tab_result = False
                     print(f"[browser] não consegui abrir a aba de capítulos: {e}")
+                if not tab_result:
+                    try:
+                        for _ in range(2):
+                            page.mouse.wheel(0, 2500)
+                            page.wait_for_timeout(800)
+                            if _visible_now():
+                                break
+                    except Exception as e:
+                        print(f"[browser] não consegui rolar a página: {e}")
+
+            html = page.content()
+            json_sources = _json_sources()
+
+            # Se mesmo assim a lista não apareceu, junta um diagnóstico do que
+            # o navegador viu (só nesse caso, pra não gastar tempo à toa).
+            _debug_local.info = None
+            if not _looks_like_challenge_page(html) and not _chapters_already_visible(
+                html, selector, pattern, url, json_sources
+            ):
+                json_responses = []
+                for resp in seen_responses:
+                    data, snippet = json_cache.get(id(resp), (None, None))
+                    if data is not None:
+                        json_responses.append((resp.url, resp.status, snippet))
+                try:
+                    _debug_local.info = _build_browser_diagnostic(html, json_responses, tab_result)
+                except Exception as e:
+                    _debug_local.info = f"(não consegui montar o diagnóstico: {e})"
         finally:
             browser.close()
-    return html
+    return html, json_sources
 
 
 def fetch_text_js(url, selector, pattern=None):
-    """Renderiza a página com um navegador headless antes de extrair o texto.
+    """Renderiza a página com um navegador antes de extrair o texto.
     Necessário pra sites que montam a lista de capítulos via JavaScript
     (ex: MangaPlus) ou que bloqueiam requisições simples (bot detection).
 
@@ -508,19 +835,20 @@ def fetch_text_js(url, selector, pattern=None):
     outras checagens que precisarem de navegador esperam a vez, em vez de
     abrir tudo em paralelo e estourar a memória do servidor."""
     with _BROWSER_LOCK:
-        html = None
+        result = None
         try:
             from patchright.sync_api import sync_playwright as patchright_sync
-            html = _render_with_browser(patchright_sync, url, selector, pattern)
+            result = _render_with_browser(patchright_sync, url, selector, pattern)
         except Exception as e:
             print(f"[fetch_text_js] patchright indisponível ou falhou ({e}); usando playwright normal.")
 
-        if html is None:
+        if result is None:
             from playwright.sync_api import sync_playwright
-            html = _render_with_browser(sync_playwright, url, selector, pattern)
+            result = _render_with_browser(sync_playwright, url, selector, pattern)
 
+    html, json_sources = result
     soup = BeautifulSoup(html, "html.parser")
-    return _extract_from_soup(soup, selector, pattern)
+    return _extract_from_soup(soup, selector, pattern, json_sources, url)
 
 
 # Frases típicas de telas de "verificação de segurança" (Cloudflare e afins)
@@ -548,27 +876,23 @@ _JS_WARNING_WORDS = ("javascript", "habilite", "enable", "ativar", "habilitar")
 
 def looks_insufficient(text, has_selector, chapter_found):
     stripped = (text or "").strip()
-    if len(stripped) < 60:
-        return True
     lower = stripped.lower()
     if "javascript" in lower and any(w in lower for w in _JS_WARNING_WORDS if w != "javascript"):
         return True
-    # com seletor configurado, texto muito curto é sinal forte de que o
-    # elemento não existia ainda no HTML bruto (não renderizado).
-    if has_selector and len(stripped) < 150:
-        return True
-    # sem seletor manual, se nem o número do capítulo aparece em lugar
-    # nenhum da página, é sinal forte de bloqueio/verificação anti-bot ou
-    # de página que não renderizou o conteúdo real.
-    if not has_selector and not chapter_found:
-        return True
-    return False
+    # Se o número do capítulo foi achado, texto curto é normal (ex: só
+    # "Cap. 1191" quando há seletor) e não precisa do navegador.
+    if chapter_found:
+        return False
+    # Sem número de capítulo em lugar nenhum: sinal de página vazia, ainda
+    # não renderizada, ou bloqueio/verificação anti-bot.
+    return True
 
 
 def fetch_text_auto(manga):
     """Busca o conteúdo da fonte, detectando automaticamente se precisa de
     navegador headless E, quando não há seletor manual, tentando achar
     sozinho o link de capítulo certo. Retorna (texto, usou_js)."""
+    _debug_local.info = None
     url = manga["url"]
     selector = manga["selector"]
     pattern = manga["chapter_regex"] or DEFAULT_CHAPTER_REGEX
@@ -681,9 +1005,13 @@ def check_manga(manga_id):
     # entender se o problema é bloqueio anti-bot, seletor errado, etc.
     if chapter_num is None:
         preview = (text or "").strip()[:200]
+        msg = f"Nenhum número de capítulo encontrado. Prévia do conteúdo recebido: {preview!r}"
+        extra = getattr(_debug_local, "info", None)
+        if extra:
+            msg += "\n" + extra
         conn.execute(
             "UPDATE mangas SET last_error = ? WHERE id = ?",
-            (f"Nenhum número de capítulo encontrado. Prévia do conteúdo recebido: {preview!r}", manga_id),
+            (msg[:4000], manga_id),
         )
 
     if is_first_check:

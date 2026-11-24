@@ -213,6 +213,37 @@ continua existindo pra quando você quiser mais precisão manual, ou pra
 sites onde a detecção automática não acerte de primeira — nesse caso ele
 tem prioridade sobre a detecção automática.
 
+## Como o app acha o capítulo sozinho (várias estratégias)
+
+Pra cada fonte o app tenta, em ordem, da pista mais confiável pra menos
+confiável, e para na primeira que der resultado:
+
+1. **Seletor CSS manual**, se você preencheu (se ele não achar nada, o app
+   não desiste: segue pras próximas).
+2. **Texto dos links** parecido com "Cap. 45", "Capítulo 45", "Chapter 45".
+3. **Abrir a aba "Capítulos"** (modo navegador): se a lista não está na
+   página, clica sozinho em abas/botões com nomes tipo "Capítulos",
+   "Capítulos (120)", "Chapters", "Episódios".
+4. **Rolar a página**, pra listas que só carregam quando você desce.
+5. **Endereço dos links**: `/capitulo-45`, `/chapter/45`, ou vários links
+   numerados dentro da própria página do mangá (`.../one-piece/1191`,
+   `.../one-piece/1190`...). Só conta link que pertence ao mangá, pra não
+   confundir com a barra lateral de "últimas atualizações" de outros
+   mangás, e paginação (`/page/2`) é ignorada.
+6. **Dados JSON**: lista de capítulos embutida na página (`__NEXT_DATA__`
+   e parecidos) ou carregada em segundo plano pelo site (XHR/fetch),
+   que o navegador do app observa durante a carga.
+
+As estratégias 5 e 6 só valem com o regex padrão: se você definiu um regex
+próprio numa fonte, o app respeita e não adivinha nada além disso.
+
+**Diagnóstico automático:** se nenhuma estratégia achar o capítulo, o app
+guarda um resumo do que viu (abas e botões, links com número, requisições
+JSON, se tentou clicar numa aba). Ele aparece na tela **Editar** da fonte,
+em "Último diagnóstico", e também ao passar o mouse no traço (—) da coluna
+"Cap. detectado". É só copiar e mandar pra quem estiver ajudando, sem
+precisar abrir o Inspecionar.
+
 ## Sites com JavaScript ou bloqueio de bot — detecção automática de navegador
 
 Alguns sites só mostram a lista de capítulos depois de rodar JavaScript no
