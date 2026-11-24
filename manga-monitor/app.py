@@ -2,6 +2,9 @@ import os
 import re
 import hashlib
 import requests
+import threading
+import time
+import secrets
 from functools import wraps
 from datetime import datetime, timedelta
 from flask import Flask, render_template, request, redirect, url_for, flash, session
@@ -14,14 +17,53 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 USE_POSTGRES = DATABASE_URL.startswith("postgres")
 SQLITE_PATH = os.environ.get("DB_PATH", "/data/mangas.db")
 
+# Garante que só um navegador headless roda por vez em todo o app — sem
+# isso, o relógio automático (que roda num thread separado) e um clique
+# manual em "Checar agora" podiam abrir navegador ao mesmo tempo,
+# multiplicando o consumo de RAM e arriscando derrubar o servidor
+# inteiro (não só o app) se a máquina tiver pouca memória sobrando.
+_BROWSER_LOCK = threading.Lock()
+
 if USE_POSTGRES:
     import psycopg2
     import psycopg2.extras
 else:
     import sqlite3
 
+_PLACEHOLDER_SECRET = "troque-esta-chave-em-producao"
+
+
+def _load_secret_key():
+    """Usa SECRET_KEY do ambiente se ela for de verdade. Se estiver vazia ou
+    com o valor de exemplo (que é público, qualquer um conseguiria forjar
+    um login com ele), gera uma chave aleatória e guarda no volume /data
+    pra ela sobreviver a reinícios do container."""
+    env_key = os.environ.get("SECRET_KEY", "").strip()
+    if env_key and env_key != _PLACEHOLDER_SECRET:
+        return env_key
+    path = os.path.join(os.path.dirname(SQLITE_PATH) or ".", "secret_key")
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                saved = f.read().strip()
+            if saved:
+                return saved
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        key = secrets.token_hex(32)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(key)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+        return key
+    except OSError:
+        # sem como gravar: usa uma chave aleatória só dessa execução
+        return secrets.token_hex(32)
+
+
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "troque-esta-chave-em-producao")
+app.secret_key = _load_secret_key()
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -329,102 +371,153 @@ def fetch_text_simple(url, selector, pattern=None):
     return _extract_from_soup(soup, selector, pattern)
 
 
-def _navigate_and_get_html(page, url, selector):
-    """Navega até a URL, espera carregar (e telas de verificação tipo
-    Cloudflare liberarem), devolve o HTML final."""
-    try:
-        page.goto(url, wait_until="networkidle", timeout=30000)
-    except Exception:
-        # Alguns sites nunca ficam "ociosos" de rede (comentários,
-        # analytics, polling) — tenta de novo só esperando o HTML
-        # carregar, sem depender da rede ficar quieta.
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        page.wait_for_timeout(3000)
+# Textos comuns de abas/botões que escondem a lista de capítulos, tipo
+# "Capítulos", "Capítulos (120)", "Lista de capítulos", "Chapters", "Episódios".
+_CHAPTER_TAB_REGEX = re.compile(
+    r"^\s*(lista de )?(cap[ií]tulos?|chapters?|epis[oó]dios?)(\s*[\(\[]?\s*\d+\s*[\)\]]?)?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _chapters_already_visible(html, selector, pattern):
+    """Diz se a lista de capítulos já está na página (sem precisar clicar
+    em nada). Com seletor manual, vale se o elemento existe; sem seletor,
+    vale se a auto-detecção acha algum link de capítulo."""
+    soup = BeautifulSoup(html, "html.parser")
     if selector:
+        return soup.select_one(selector) is not None
+    return auto_detect_chapter_text(soup, pattern or DEFAULT_CHAPTER_REGEX) is not None
+
+
+def _try_open_chapter_tab(page, selector, pattern, max_seconds=8):
+    """Alguns sites só mostram a lista de capítulos depois de clicar numa
+    aba ou botão (ex: "Capítulos"). Procura esse tipo de aba/botão e
+    clica, parando assim que a lista aparecer. Tenta no máximo 2 itens de
+    cada tipo e respeita um limite total de tempo, pra não demorar nem
+    mexer demais na página. Devolve True se a lista apareceu."""
+    deadline = time.monotonic() + max_seconds
+    locators = (
+        page.get_by_role("tab", name=_CHAPTER_TAB_REGEX),
+        page.get_by_role("button", name=_CHAPTER_TAB_REGEX),
+        page.get_by_text(_CHAPTER_TAB_REGEX),
+    )
+    for locator in locators:
         try:
-            page.wait_for_selector(selector, timeout=10000)
+            total = locator.count()
         except Exception:
-            pass  # segue mesmo se o seletor não aparecer a tempo
-    html = page.content()
-
-    # Alguns serviços de proteção (tipo Cloudflare) mostram uma tela de
-    # "verificação de segurança" por alguns segundos antes de liberar o
-    # conteúdo real. Se detectar essa tela, espera bem mais (até 30s no
-    # total) e tenta pegar o conteúdo de novo, em vez de desistir na hora.
-    attempts = 0
-    while _looks_like_challenge_page(html) and attempts < 6:
-        page.wait_for_timeout(5000)
-        try:
-            page.wait_for_load_state("networkidle", timeout=4000)
-        except Exception:
-            pass
-        html = page.content()
-        attempts += 1
-    return html
-
-
-def _render_with_patchright(url, selector, pattern):
-    """Usa a configuração recomendada pela documentação do patchright pra
-    máxima chance de passar por proteções anti-bot: Chrome de verdade
-    (não Chromium genérico), contexto persistente, SEM modo headless
-    (por isso o container roda com Xvfb/tela virtual) e sem user-agent
-    ou cabeçalhos customizados — mexer nisso manualmente tende a criar
-    inconsistências que entregam a automação, em vez de escondê-la."""
-    import tempfile
-    from patchright.sync_api import sync_playwright
-
-    with sync_playwright() as p:
-        with tempfile.TemporaryDirectory() as user_data_dir:
-            context = p.chromium.launch_persistent_context(
-                user_data_dir,
-                channel="chrome",
-                headless=False,
-                no_viewport=True,
-                args=["--no-sandbox"],
-            )
+            continue
+        for i in range(min(total, 2)):
+            if time.monotonic() > deadline:
+                return False
             try:
-                page = context.new_page()
-                html = _navigate_and_get_html(page, url, selector)
-            finally:
-                context.close()
-    return html
+                locator.nth(i).click(timeout=2000)
+            except Exception:
+                continue
+            # dá até ~3s pra lista aparecer depois do clique
+            waited = 0
+            while waited <= 3000:
+                if _chapters_already_visible(page.content(), selector, pattern):
+                    return True
+                page.wait_for_timeout(500)
+                waited += 500
+    return False
 
 
-def _render_with_playwright_fallback(url, selector, pattern):
-    """Fallback mais simples (Chromium headless do Playwright normal) pra
-    quando o patchright/Chrome não estiver disponível por algum motivo."""
-    from playwright.sync_api import sync_playwright
-
-    with sync_playwright() as p:
+def _render_with_browser(sync_playwright_factory, url, selector, pattern):
+    """Faz o trabalho de verdade: abre o navegador, navega, espera telas de
+    verificação liberarem, abre a aba de capítulos se a lista estiver
+    escondida, e devolve o HTML final da página."""
+    with sync_playwright_factory() as p:
         browser = p.chromium.launch(
-            args=["--no-sandbox", "--disable-dev-shm-usage"]
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+            ]
         )
         try:
-            page = browser.new_page(user_agent=HEADERS["User-Agent"])
-            html = _navigate_and_get_html(page, url, selector)
+            page = browser.new_page(
+                user_agent=HEADERS["User-Agent"],
+                viewport={"width": 1366, "height": 900},
+                locale="pt-BR",
+            )
+            # Esconde os sinais mais óbvios de que é um navegador automatizado.
+            page.add_init_script(
+                """
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                Object.defineProperty(navigator, 'languages', { get: () => ['pt-BR', 'pt', 'en'] });
+                window.chrome = { runtime: {} };
+                """
+            )
+            try:
+                page.goto(url, wait_until="networkidle", timeout=30000)
+            except Exception:
+                # Alguns sites nunca ficam "ociosos" de rede (comentários,
+                # analytics, polling) — tenta de novo só esperando o HTML
+                # carregar, sem depender da rede ficar quieta.
+                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(3000)
+            if selector:
+                try:
+                    page.wait_for_selector(selector, timeout=5000)
+                except Exception:
+                    pass  # segue mesmo se o seletor não aparecer a tempo
+            html = page.content()
+
+            # Alguns serviços de proteção (tipo Cloudflare) mostram uma tela
+            # de "verificação de segurança" por alguns segundos antes de
+            # liberar o conteúdo real. Se detectar essa tela, espera um
+            # pouco (até 10s no total, em 2 tentativas) e tenta pegar o
+            # conteúdo de novo, em vez de desistir na hora. Esperar mais que
+            # isso só segura o navegador (e a fila de checagens) à toa.
+            attempts = 0
+            while _looks_like_challenge_page(html) and attempts < 2:
+                page.wait_for_timeout(5000)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=4000)
+                except Exception:
+                    pass
+                html = page.content()
+                attempts += 1
+
+            # Se a lista de capítulos não está na página (ex: fica atrás de
+            # uma aba "Capítulos"), tenta abrir essa aba sozinho.
+            if not _looks_like_challenge_page(html) and not _chapters_already_visible(html, selector, pattern):
+                try:
+                    if _try_open_chapter_tab(page, selector, pattern):
+                        html = page.content()
+                except Exception as e:
+                    print(f"[browser] não consegui abrir a aba de capítulos: {e}")
         finally:
             browser.close()
     return html
 
 
 def fetch_text_js(url, selector, pattern=None):
-    """Renderiza a página com um navegador antes de extrair o texto.
+    """Renderiza a página com um navegador headless antes de extrair o texto.
     Necessário pra sites que montam a lista de capítulos via JavaScript
     (ex: MangaPlus) ou que bloqueiam requisições simples (bot detection).
 
-    Tenta o patchright com Chrome real primeiro (configuração recomendada
-    pela documentação dele pra máxima chance de passar por proteções tipo
-    Cloudflare); se não estiver disponível ou falhar por qualquer motivo,
-    cai de volta pro Playwright normal (Chromium headless), sem quebrar a
-    checagem."""
-    html = None
-    try:
-        html = _render_with_patchright(url, selector, pattern)
-    except Exception as e:
-        print(f"[fetch_text_js] patchright/chrome indisponível ou falhou ({e}); usando playwright normal.")
+    Tenta usar o patchright (versão do Playwright com correções
+    anti-detecção) primeiro; se ele não estiver instalado OU falhar por
+    qualquer motivo (ex: navegador dele não foi baixado no build), cai de
+    volta pro Playwright normal automaticamente, sem quebrar a checagem.
 
-    if html is None:
-        html = _render_with_playwright_fallback(url, selector, pattern)
+    Só um navegador roda por vez em todo o app (veja _BROWSER_LOCK) —
+    outras checagens que precisarem de navegador esperam a vez, em vez de
+    abrir tudo em paralelo e estourar a memória do servidor."""
+    with _BROWSER_LOCK:
+        html = None
+        try:
+            from patchright.sync_api import sync_playwright as patchright_sync
+            html = _render_with_browser(patchright_sync, url, selector, pattern)
+        except Exception as e:
+            print(f"[fetch_text_js] patchright indisponível ou falhou ({e}); usando playwright normal.")
+
+        if html is None:
+            from playwright.sync_api import sync_playwright
+            html = _render_with_browser(sync_playwright, url, selector, pattern)
 
     soup = BeautifulSoup(html, "html.parser")
     return _extract_from_soup(soup, selector, pattern)
@@ -908,4 +1001,4 @@ scheduler.add_job(check_all_due, IntervalTrigger(minutes=15), id="check_all_due"
 scheduler.start()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5050)))
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5050)), threaded=True)

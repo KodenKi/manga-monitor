@@ -73,6 +73,14 @@ canal que quiser.
 - Acesse `/register` pra criar a primeira conta.
 - Depois é só entrar por `/login`.
 
+**Chave secreta (SECRET_KEY):** se a variável `SECRET_KEY` não estiver
+definida (ou ainda tiver o valor de exemplo `troque-esta-chave-em-producao`),
+o app gera uma chave aleatória sozinho e guarda em `/data/secret_key`, pra
+ela sobreviver a reinícios. Com o valor de exemplo qualquer pessoa que
+conhecesse a chave conseguiria forjar um login. Se quiser controlar a
+chave você mesmo, defina `SECRET_KEY` com um texto longo e aleatório no
+Portainer/compose.
+
 **Aviso importante:** essa autenticação é simples (usuário/senha com hash,
 sessão via cookie) — boa o suficiente pra uso pessoal/doméstico, mas **não**
 tem proteção contra ataques de força bruta, recuperação de senha, nem CSRF
@@ -239,46 +247,50 @@ fonte.
 
 Alguns sites usam proteção que detecta especificamente quando é um
 navegador automatizado (mesmo com Playwright/Chromium headless) — não só
-"tem JavaScript ou não". Pra aumentar bastante a chance de passar por
-isso, o app usa o **patchright** (versão do Playwright com correções
-anti-detecção) seguindo a configuração recomendada pela documentação
-dele, que é bem diferente do modo "padrão":
+"tem JavaScript ou não". Pra aumentar a chance de passar por isso, o
+app usa o **patchright** (uma versão do Playwright com várias correções
+nos detalhes que costumam entregar que é automação) em vez do Playwright
+puro, além de:
 
-- **Google Chrome de verdade** instalado no container (não o Chromium
-  genérico que o Playwright baixa por padrão) — sites de proteção
-  costumam reconhecer a "impressão digital" do Chromium comum como sinal
-  de automação.
-- **Sem modo headless** — o Chrome roda "com interface" mesmo dentro do
-  servidor, usando uma tela virtual (Xvfb) já que não tem monitor físico.
-  Isso também é mais parecido com um navegador de verdade que o modo
-  headless costuma denunciar.
-- **Sem user-agent nem cabeçalhos customizados** — a própria documentação
-  do patchright recomenda não mexer nisso manualmente, já que
-  inconsistências entre o que se diz ser e o que realmente é costumam
-  ser o que entrega a automação, não a ausência de disfarce.
+- Esconder sinais adicionais de automação (`navigator.webdriver`,
+  plugins vazios, etc.)
+- Usar um idioma e tamanho de tela mais realistas
+- Tentar esperar a rede ficar quieta, mas se a página nunca "sossega"
+  (sites com comentários/analytics que ficam fazendo requisições sem
+  parar), tenta de novo só esperando o HTML carregar, com uma pausa extra
 
 Isso ajuda bastante, mas alguns sites com proteção muito agressiva
-podem continuar bloqueando mesmo assim — não é algo que dá pra garantir
-100% de contorno. Se o Chrome/patchright não estiver disponível por
-qualquer motivo (falha na instalação, etc.), o app cai de volta
-automaticamente pro Playwright normal (Chromium headless simples), sem
-travar nem quebrar a checagem.
+(Cloudflare em modo mais estrito, por exemplo) podem continuar
+bloqueando mesmo assim — não é algo que dá pra garantir 100% de contorno.
+A instalação do navegador do patchright no build é **opcional** — se
+falhar por qualquer motivo (ou se o patchright não estiver disponível em
+tempo de execução), o app detecta isso automaticamente e usa o
+Playwright normal no lugar, sem travar nem quebrar nada.
 
-**Nota sobre o build:** essa configuração instala o Google Chrome de
-verdade (além do Chromium do Playwright, mantido como reserva) e
-configura uma tela virtual (Xvfb) pra rodar sem modo headless — isso
-deixa a imagem maior e o build mais demorado que antes. É o preço de ter
-uma chance real de passar por proteções mais chatas, em vez de só um
-disfarce superficial.
+**Nota sobre o build:** quando a instalação do patchright dá certo, a
+imagem baixa um segundo navegador Chromium (além do que o Playwright já
+baixava), deixando o build ainda mais demorado na primeira vez — é o
+preço de ter mais chance de passar por proteções mais chatas.
 
 **Espera extra pra telas de verificação:** alguns sites mostram uma tela
 tipo "Um momento... verificando seu navegador" por alguns segundos antes
 de liberar o conteúdo de verdade (comum em proteções tipo Cloudflare). O
-app detecta esse tipo de tela e espera bem mais (até 30 segundos no
-total, tentando de novo a cada 5s), em vez de desistir na hora que vê
-essa tela. Mesmo assim, proteções mais sofisticadas (que analisam
+app detecta esse tipo de tela e espera um pouco (até 10 segundos no
+total, em 2 tentativas de 5s), em vez de desistir na hora que vê essa
+tela. Esperar mais que isso só segura o navegador à toa: como só um
+navegador roda por vez, uma fonte travada atrasaria todas as outras
+checagens que precisam dele. Proteções mais sofisticadas (que analisam
 comportamento do navegador, não só tempo de espera) podem continuar
 bloqueando — não é algo que dá pra garantir 100% de contorno.
+
+**Lista de capítulos atrás de uma aba:** alguns sites só mostram os
+capítulos depois de clicar numa aba ou botão (ex: "Capítulos"). No modo
+navegador, se a lista não estiver na página, o app procura sozinho abas e
+botões com textos como "Capítulos", "Capítulos (120)", "Lista de
+capítulos", "Chapters" ou "Episódios", clica (no máximo 2 de cada tipo, em
+até 8 segundos) e só então lê a lista. Se a lista já está visível, ele não
+clica em nada. Abas com só um ícone ou com nome fora do comum não são
+reconhecidas — nesses casos o seletor CSS manual continua sendo o plano B.
 
 **Diagnóstico:** quando o app não consegue achar nenhum número de
 capítulo (mesmo com seletor e navegador), a coluna "Cap. detectado" fica
