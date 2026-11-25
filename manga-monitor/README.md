@@ -393,6 +393,19 @@ tem cadastrados, quantas fontes estão ativas, quantos capítulos foram
 detectados na última semana, e quantas fontes estão com problema no
 momento.
 
+## Versão no rodapé
+
+No rodapé de todas as páginas aparece, bem discreto, algo como
+`v2026.11.25 · a1b2c3d`. A data é a da última atualização entregue e o
+código depois do ponto muda sozinho sempre que qualquer arquivo do app
+mudar. Se o número não mudou depois de uma atualização, o servidor ainda
+está rodando a versão antiga (falta o `git pull` e o rebuild da stack).
+
+Além do rodapé, na **primeira página que você abrir depois de uma
+atualização** aparece uma faixa azul: "✓ App atualizado para vX (antes:
+vY)". Ela aparece uma vez só por usuário e some nas páginas seguintes. Se a
+faixa não apareceu, o servidor ainda não está com a versão nova.
+
 ## Observações importantes
 
 - Não configure intervalos muito curtos (ex: minutos) — isso pode

@@ -72,6 +72,52 @@ def _load_secret_key():
 app = Flask(__name__)
 app.secret_key = _load_secret_key()
 
+# Versão mostrada discretamente no rodapé, pra saber se uma atualização
+# já entrou no ar. APP_VERSION é a data da entrega (mudada a cada
+# atualização); BUILD_ID é calculado sozinho a partir dos arquivos do app e
+# muda sempre que qualquer arquivo mudar, mesmo que a data não tenha sido
+# alterada.
+APP_VERSION = "2026.11.25.2"
+
+
+def _compute_build_id():
+    h = hashlib.sha1()
+    base = os.path.dirname(os.path.abspath(__file__))
+    paths = [os.path.join(base, "app.py"), os.path.join(base, "static", "style.css")]
+    templates_dir = os.path.join(base, "templates")
+    if os.path.isdir(templates_dir):
+        paths += sorted(os.path.join(templates_dir, f) for f in os.listdir(templates_dir))
+    for path in paths:
+        try:
+            with open(path, "rb") as f:
+                h.update(f.read())
+        except OSError:
+            continue
+    return h.hexdigest()[:7]
+
+
+BUILD_ID = _compute_build_id()
+
+
+@app.context_processor
+def inject_version():
+    """Disponibiliza a versão pro rodapé e, na primeira página que cada
+    usuário abrir depois de uma atualização, um aviso de "app atualizado"
+    (mostrado uma vez só: a última versão vista fica guardada por usuário)."""
+    current = f"v{APP_VERSION} · {BUILD_ID}"
+    notice = None
+    user_id = session.get("user_id")
+    if user_id and session.get("seen_version") != current:
+        try:
+            last_seen = get_setting(user_id, "last_seen_version", "")
+            if last_seen != current:
+                notice = {"current": current, "previous": last_seen or None}
+                set_setting(user_id, "last_seen_version", current)
+            session["seen_version"] = current
+        except Exception as e:
+            print(f"[versão] não consegui checar a versão vista: {e}")
+    return {"app_version": current, "update_notice": notice}
+
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"

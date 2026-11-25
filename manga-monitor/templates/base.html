@@ -26,6 +26,12 @@
   </header>
 
   <main>
+    {% if update_notice %}
+      <div class="update-notice">
+        ✓ App atualizado para <strong>{{ update_notice.current }}</strong>
+        {% if update_notice.previous %}<span class="update-prev">(antes: {{ update_notice.previous }})</span>{% endif %}
+      </div>
+    {% endif %}
     {% with messages = get_flashed_messages() %}
       {% if messages %}
         <div class="flash">
@@ -36,5 +42,7 @@
 
     {% block content %}{% endblock %}
   </main>
+
+  <footer class="app-version">{{ app_version }}</footer>
 </body>
 </html>
