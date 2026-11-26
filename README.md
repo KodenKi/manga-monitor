@@ -73,6 +73,14 @@ canal que quiser.
 - Acesse `/register` pra criar a primeira conta.
 - Depois é só entrar por `/login`.
 
+**Chave secreta (SECRET_KEY):** se a variável `SECRET_KEY` não estiver
+definida (ou ainda tiver o valor de exemplo `troque-esta-chave-em-producao`),
+o app gera uma chave aleatória sozinho e guarda em `/data/secret_key`, pra
+ela sobreviver a reinícios. Com o valor de exemplo qualquer pessoa que
+conhecesse a chave conseguiria forjar um login. Se quiser controlar a
+chave você mesmo, defina `SECRET_KEY` com um texto longo e aleatório no
+Portainer/compose.
+
 **Aviso importante:** essa autenticação é simples (usuário/senha com hash,
 sessão via cookie) — boa o suficiente pra uso pessoal/doméstico, mas **não**
 tem proteção contra ataques de força bruta, recuperação de senha, nem CSRF
@@ -205,6 +213,37 @@ continua existindo pra quando você quiser mais precisão manual, ou pra
 sites onde a detecção automática não acerte de primeira — nesse caso ele
 tem prioridade sobre a detecção automática.
 
+## Como o app acha o capítulo sozinho (várias estratégias)
+
+Pra cada fonte o app tenta, em ordem, da pista mais confiável pra menos
+confiável, e para na primeira que der resultado:
+
+1. **Seletor CSS manual**, se você preencheu (se ele não achar nada, o app
+   não desiste: segue pras próximas).
+2. **Texto dos links** parecido com "Cap. 45", "Capítulo 45", "Chapter 45".
+3. **Abrir a aba "Capítulos"** (modo navegador): se a lista não está na
+   página, clica sozinho em abas/botões com nomes tipo "Capítulos",
+   "Capítulos (120)", "Chapters", "Episódios".
+4. **Rolar a página**, pra listas que só carregam quando você desce.
+5. **Endereço dos links**: `/capitulo-45`, `/chapter/45`, ou vários links
+   numerados dentro da própria página do mangá (`.../one-piece/1191`,
+   `.../one-piece/1190`...). Só conta link que pertence ao mangá, pra não
+   confundir com a barra lateral de "últimas atualizações" de outros
+   mangás, e paginação (`/page/2`) é ignorada.
+6. **Dados JSON**: lista de capítulos embutida na página (`__NEXT_DATA__`
+   e parecidos) ou carregada em segundo plano pelo site (XHR/fetch),
+   que o navegador do app observa durante a carga.
+
+As estratégias 5 e 6 só valem com o regex padrão: se você definiu um regex
+próprio numa fonte, o app respeita e não adivinha nada além disso.
+
+**Diagnóstico automático:** se nenhuma estratégia achar o capítulo, o app
+guarda um resumo do que viu (abas e botões, links com número, requisições
+JSON, se tentou clicar numa aba). Ele aparece na tela **Editar** da fonte,
+em "Último diagnóstico", e também ao passar o mouse no traço (—) da coluna
+"Cap. detectado". É só copiar e mandar pra quem estiver ajudando, sem
+precisar abrir o Inspecionar.
+
 ## Sites com JavaScript ou bloqueio de bot — detecção automática de navegador
 
 Alguns sites só mostram a lista de capítulos depois de rodar JavaScript no
@@ -267,11 +306,22 @@ preço de ter mais chance de passar por proteções mais chatas.
 **Espera extra pra telas de verificação:** alguns sites mostram uma tela
 tipo "Um momento... verificando seu navegador" por alguns segundos antes
 de liberar o conteúdo de verdade (comum em proteções tipo Cloudflare). O
-app detecta esse tipo de tela e espera bem mais (até 30 segundos no
-total, tentando de novo a cada 5s), em vez de desistir na hora que vê
-essa tela. Mesmo assim, proteções mais sofisticadas (que analisam
+app detecta esse tipo de tela e espera um pouco (até 10 segundos no
+total, em 2 tentativas de 5s), em vez de desistir na hora que vê essa
+tela. Esperar mais que isso só segura o navegador à toa: como só um
+navegador roda por vez, uma fonte travada atrasaria todas as outras
+checagens que precisam dele. Proteções mais sofisticadas (que analisam
 comportamento do navegador, não só tempo de espera) podem continuar
 bloqueando — não é algo que dá pra garantir 100% de contorno.
+
+**Lista de capítulos atrás de uma aba:** alguns sites só mostram os
+capítulos depois de clicar numa aba ou botão (ex: "Capítulos"). No modo
+navegador, se a lista não estiver na página, o app procura sozinho abas e
+botões com textos como "Capítulos", "Capítulos (120)", "Lista de
+capítulos", "Chapters" ou "Episódios", clica (no máximo 2 de cada tipo, em
+até 8 segundos) e só então lê a lista. Se a lista já está visível, ele não
+clica em nada. Abas com só um ícone ou com nome fora do comum não são
+reconhecidas — nesses casos o seletor CSS manual continua sendo o plano B.
 
 **Diagnóstico:** quando o app não consegue achar nenhum número de
 capítulo (mesmo com seletor e navegador), a coluna "Cap. detectado" fica
@@ -342,6 +392,19 @@ No topo da tela inicial tem um resumo com: quantos mangás (grupos) você
 tem cadastrados, quantas fontes estão ativas, quantos capítulos foram
 detectados na última semana, e quantas fontes estão com problema no
 momento.
+
+## Versão no rodapé
+
+No rodapé de todas as páginas aparece, bem discreto, algo como
+`v2026.11.25 · a1b2c3d`. A data é a da última atualização entregue e o
+código depois do ponto muda sozinho sempre que qualquer arquivo do app
+mudar. Se o número não mudou depois de uma atualização, o servidor ainda
+está rodando a versão antiga (falta o `git pull` e o rebuild da stack).
+
+Além do rodapé, na **primeira página que você abrir depois de uma
+atualização** aparece uma faixa azul: "✓ App atualizado para vX (antes:
+vY)". Ela aparece uma vez só por usuário e some nas páginas seguintes. Se a
+faixa não apareceu, o servidor ainda não está com a versão nova.
 
 ## Observações importantes
 

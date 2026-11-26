@@ -279,3 +279,37 @@ td a { color: var(--accent); text-decoration: none; }
   margin-bottom: 1.5rem;
   font-size: 0.9rem;
 }
+
+.diag {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.7rem 0.9rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+  max-height: 320px;
+  overflow: auto;
+  user-select: all;
+}
+
+.app-version {
+  text-align: center;
+  font-size: 0.68rem;
+  color: var(--muted);
+  opacity: 0.4;
+  padding: 1.5rem 0 1rem;
+  letter-spacing: 0.02em;
+}
+
+.update-notice {
+  background: #1f2a3a;
+  border: 1px solid #34507a;
+  color: #b9d3ff;
+  padding: 0.55rem 1rem;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+  font-size: 0.85rem;
+}
+.update-notice .update-prev { color: var(--muted); margin-left: 0.4rem; }
