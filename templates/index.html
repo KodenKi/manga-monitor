@@ -142,6 +142,22 @@
       <summary>Ver fontes e configurações ({{ mangas|length }})</summary>
 
       <details class="collapsible">
+        <summary>🔢 Último capítulo notificado: {{ "%g"|format(g.last_notified_chapter) if g and g.last_notified_chapter is not none else "nenhum" }}</summary>
+        <form method="post" action="{{ url_for('group_chapter') }}" class="inline-webhook-form">
+          <input type="hidden" name="group_name" value="{{ group_name }}">
+          <input type="number" step="any" min="0" name="chapter" required
+                 value="{{ '%g'|format(g.last_notified_chapter) if g and g.last_notified_chapter is not none else '' }}"
+                 placeholder="Número do capítulo (ex: 222)">
+          <button type="submit">Ajustar</button>
+        </form>
+        <p class="hint">
+          O app só avisa de capítulos <strong>maiores</strong> que esse número. Se ele
+          leu um número errado e ficou alto demais, coloque aqui o último capítulo
+          que realmente saiu.
+        </p>
+      </details>
+
+      <details class="collapsible">
         <summary>⚙️ Webhook deste grupo</summary>
         <form method="post" action="{{ url_for('group_webhook') }}" class="inline-webhook-form">
           <input type="hidden" name="group_name" value="{{ group_name }}">

@@ -77,7 +77,7 @@ app.secret_key = _load_secret_key()
 # atualização); BUILD_ID é calculado sozinho a partir dos arquivos do app e
 # muda sempre que qualquer arquivo mudar, mesmo que a data não tenha sido
 # alterada.
-APP_VERSION = "2026.11.25.3"
+APP_VERSION = "2026.11.26"
 
 
 def _compute_build_id():
@@ -446,7 +446,30 @@ def _collect_chapter_candidates(soup, pattern):
     return candidates
 
 
-def _describe_candidates(candidates):
+def _main_cluster(nums, max_gap=5):
+    """Os capítulos de UM mangá aparecem numa sequência 'colada' (222, 221,
+    220...). Números soltos longe dessa sequência costumam ser de outros
+    títulos na mesma página (recomendados, atualizações recentes) ou
+    comentários. Devolve os números da maior sequência; se não houver uma
+    sequência clara (menos de 3 números juntos), não filtra nada."""
+    vals = sorted(set(nums))
+    if len(vals) < 3:
+        return vals
+    clusters, cur = [], [vals[0]]
+    for v in vals[1:]:
+        if v - cur[-1] <= max_gap:
+            cur.append(v)
+        else:
+            clusters.append(cur)
+            cur = [v]
+    clusters.append(cur)
+    best = max(clusters, key=lambda c: (len(c), c[-1]))
+    if len(best) < 3:
+        return vals
+    return best
+
+
+def _describe_candidates(candidates, chosen=None):
     if not candidates:
         return None
 
@@ -456,7 +479,17 @@ def _describe_candidates(candidates):
     top = sorted(candidates, key=lambda c: c[0], reverse=True)[:6]
     top_txt = " | ".join(f"{n:g} <- '{short(t)}' ({kind})" for n, t, kind in top)
     order = ", ".join(f"{n:g}" for n, _, _ in candidates[:12])
-    return f"Maiores números vistos: {top_txt}\nOrdem em que aparecem na página: {order}"
+    lines = [
+        f"Maiores números vistos: {top_txt}",
+        f"Ordem em que aparecem na página: {order}",
+    ]
+    if chosen:
+        ignored = sorted({n for n, _, _ in candidates} - set(chosen), reverse=True)
+        lines.append(
+            f"Sequência usada: {min(chosen):g} a {max(chosen):g} ({len(chosen)} números)"
+            + (f"; ignorados por ficarem soltos: {', '.join(f'{n:g}' for n in ignored[:8])}" if ignored else "")
+        )
+    return "\n".join(lines)
 
 
 def auto_detect_chapter_text(soup, pattern, record=False):
@@ -464,14 +497,19 @@ def auto_detect_chapter_text(soup, pattern, record=False):
     página (texto dos links e rótulos curtos). Retorna só o texto desses
     candidatos — não a página inteira — pra evitar ruído de comentários,
     curtidas, contador de visitas etc. Retorna None se não achar nenhum.
-    Com record=True, guarda um resumo do que viu pro diagnóstico."""
+    Com o regex padrão, só vale a maior sequência de capítulos 'colados'
+    (números soltos de outros títulos ficam de fora). Com record=True,
+    guarda um resumo do que viu pro diagnóstico."""
     candidates = _collect_chapter_candidates(soup, pattern)
+    default = _is_default_pattern(pattern)
+    chosen = _main_cluster([n for n, _, _ in candidates]) if (candidates and default) else None
     if record:
-        _debug_local.candidates_info = _describe_candidates(candidates)
+        _debug_local.candidates_info = _describe_candidates(candidates, chosen)
     if not candidates:
         return None
-    ranked = sorted(candidates, key=lambda c: c[0], reverse=True)
-    if _is_default_pattern(pattern):
+    if default:
+        keep = set(chosen)
+        ranked = sorted((c for c in candidates if c[0] in keep), key=lambda c: c[0], reverse=True)
         # texto padronizado: o número extraído depois é exatamente o certo,
         # sem se confundir com outros números que estejam no texto bruto
         seen, parts = set(), []
@@ -482,6 +520,7 @@ def auto_detect_chapter_text(soup, pattern, record=False):
             if len(parts) >= 5:
                 break
         return " | ".join(parts)
+    ranked = sorted(candidates, key=lambda c: c[0], reverse=True)
     return " | ".join(t for _, t, _ in ranked[:5])
 
 
@@ -1388,6 +1427,37 @@ def try_send_test_webhook(webhook, label):
         return False, f"Discord respondeu com status {resp.status_code} — confira se a URL do webhook está correta."
     except requests.RequestException as e:
         return False, f"Falha ao enviar teste: {e}"
+
+
+@app.route("/group_chapter", methods=["POST"])
+@login_required
+def group_chapter():
+    """Corrige o 'último capítulo notificado' de um grupo (ex: o app leu um
+    número errado e passou a ignorar os capítulos de verdade)."""
+    user_id = session["user_id"]
+    group_name = request.form.get("group_name", "").strip()
+    raw = request.form.get("chapter", "").strip().replace(",", ".")
+    try:
+        value = float(raw)
+        if value < 0 or value >= 100000:
+            raise ValueError
+    except ValueError:
+        flash("Informe um número de capítulo válido (ex: 222).")
+        return redirect(url_for("index"))
+    conn = get_db()
+    owns_group = conn.execute(
+        "SELECT 1 FROM mangas WHERE user_id = ? AND group_name = ?", (user_id, group_name)
+    ).fetchone()
+    if owns_group:
+        get_group(conn, user_id, group_name)
+        conn.execute(
+            "UPDATE groups SET last_notified_chapter = ? WHERE user_id = ? AND group_name = ?",
+            (value, user_id, group_name),
+        )
+        conn.commit()
+        flash(f"Último capítulo notificado de '{group_name}' ajustado para {value:g}.")
+    conn.close()
+    return redirect(url_for("index"))
 
 
 @app.route("/group_webhook", methods=["POST"])

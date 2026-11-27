@@ -226,6 +226,9 @@ confiável, e para na primeira que der resultado:
    fora de links** ("Capítulo 222" numa linha que não é link, como capítulo
    bloqueado ou de acesso antecipado), desde que apareçam pelo menos 3
    capítulos diferentes e não estejam numa área de comentários.
+   Com o regex padrão, só vale a **maior sequência de capítulos colados**
+   (ex: 215 a 222): números soltos longe dela, de outros títulos na mesma
+   página (recomendados, atualizações recentes), são ignorados.
 3. **Abrir a aba "Capítulos"** (modo navegador): se a lista não está na
    página, clica sozinho em abas/botões com nomes tipo "Capítulos",
    "Capítulos (120)", "Chapters", "Episódios".
@@ -370,6 +373,15 @@ Tanto em Configurações (webhook geral) quanto em cada grupo na tela
 inicial tem um botão **"Enviar teste"** / **"Testar"**, que manda uma
 mensagem de exemplo pro Discord na hora — não precisa esperar um capítulo
 de verdade sair pra confirmar que a URL está certa.
+
+## Corrigir o último capítulo notificado
+
+Dentro de cada grupo, em "Ver fontes e configurações", o item **🔢 Último
+capítulo notificado** mostra o número que o app usa como referência e
+permite ajustá-lo. O app só avisa de capítulos maiores que ele; se uma
+fonte leu um número errado e alto demais, os capítulos de verdade ficam
+sem aviso até passarem dele. Coloque ali o último capítulo que realmente
+saiu.
 
 ## Histórico de capítulos
 
