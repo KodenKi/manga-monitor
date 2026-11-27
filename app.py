@@ -77,7 +77,7 @@ app.secret_key = _load_secret_key()
 # atualização); BUILD_ID é calculado sozinho a partir dos arquivos do app e
 # muda sempre que qualquer arquivo mudar, mesmo que a data não tenha sido
 # alterada.
-APP_VERSION = "2026.11.25.2"
+APP_VERSION = "2026.11.25.3"
 
 
 def _compute_build_id():
@@ -385,25 +385,104 @@ def extract_chapter_number(text, pattern):
     return max(nums) if nums else None
 
 
-def auto_detect_chapter_text(soup, pattern):
-    """Sem seletor manual, tenta achar sozinho quais links da página parecem
-    ser de capítulo (o texto do link bate com o padrão de número de
-    capítulo). Retorna só o texto desses links — não a página inteira —
-    pra evitar ruído de comentários, curtidas, contador de visitas etc.
-    Retorna None se não achar nenhum candidato confiável."""
+# Rótulo de capítulo no INÍCIO de um texto curto: "Capítulo 222", "Cap. 222",
+# "Chapter 222 - Título". Comentários e sinopses costumam citar capítulos no
+# meio de frases, então exigir o início ajuda a não confundir com eles.
+_LABEL_RE = re.compile(
+    r"^\s*(?:cap[ií]tulo|chapter|cap\.?|epis[oó]dio|ep\.?)\s*[:\-#]?\s*(\d+(?:[.,]\d+)?)\b",
+    re.IGNORECASE,
+)
+
+
+def _label_candidates(soup):
+    """Procura rótulos curtos de capítulo em QUALQUER elemento, não só em
+    links. Cobre linhas de lista que não são links (ex: capítulo bloqueado
+    ou de acesso antecipado) e listas montadas por JavaScript."""
+    out = []
+    for node in soup.find_all(string=_LABEL_RE):
+        text = re.sub(r"\s+", " ", str(node)).strip()
+        if not text or len(text) > 60:
+            continue
+        parent = node.parent
+        if parent is not None and parent.name in ("script", "style", "title", "noscript"):
+            continue
+        in_comments = False
+        for anc in list(node.parents)[:8]:
+            attrs = f"{anc.get('id') or ''} {' '.join(anc.get('class') or [])}".lower() if hasattr(anc, "get") else ""
+            if "comment" in attrs or "coment" in attrs:
+                in_comments = True
+                break
+        if in_comments:
+            continue
+        m = _LABEL_RE.match(text)
+        n = _to_number(m.group(1)) if m else None
+        if n is not None:
+            out.append((n, text, "rótulo"))
+    return out
+
+
+def _collect_chapter_candidates(soup, pattern):
+    """Junta os candidatos a 'número de capítulo' da página: texto dos links
+    e (só com o regex padrão) rótulos curtos fora de links. Devolve uma
+    lista de (numero, texto, tipo) na ordem em que aparecem."""
     candidates = []
     for a in soup.find_all("a"):
-        text = a.get_text(" ", strip=True)
-        if not text or len(text) > 120:
+        text = re.sub(r"\s+", " ", a.get_text(" ", strip=True)).strip()
+        # Links gigantes (que embrulham a página inteira) não valem. Mas um
+        # link de linha de lista pode ter bastante texto (título, data,
+        # curtidas), então só olha o começo dele em vez de descartar.
+        if not text or len(text) > 400:
             continue
-        num = extract_chapter_number(text, pattern)
+        head = text[:160]
+        num = extract_chapter_number(head, pattern)
         if num is not None:
-            candidates.append((num, text))
+            candidates.append((num, head, "link"))
+    if _is_default_pattern(pattern):
+        labels = _label_candidates(soup)
+        # um rótulo isolado pode ser comentário ou sinopse; uma lista de
+        # vários capítulos diferentes é bem mais confiável
+        if len({n for n, _, _ in labels}) >= 3:
+            candidates.extend(labels)
+    return candidates
+
+
+def _describe_candidates(candidates):
     if not candidates:
         return None
-    candidates.sort(key=lambda c: c[0], reverse=True)
-    top = candidates[:5]
-    return " | ".join(t for _, t in top)
+
+    def short(t, n=40):
+        return re.sub(r"\s+", " ", t or "").strip()[:n]
+
+    top = sorted(candidates, key=lambda c: c[0], reverse=True)[:6]
+    top_txt = " | ".join(f"{n:g} <- '{short(t)}' ({kind})" for n, t, kind in top)
+    order = ", ".join(f"{n:g}" for n, _, _ in candidates[:12])
+    return f"Maiores números vistos: {top_txt}\nOrdem em que aparecem na página: {order}"
+
+
+def auto_detect_chapter_text(soup, pattern, record=False):
+    """Sem seletor manual, tenta achar sozinho os números de capítulo da
+    página (texto dos links e rótulos curtos). Retorna só o texto desses
+    candidatos — não a página inteira — pra evitar ruído de comentários,
+    curtidas, contador de visitas etc. Retorna None se não achar nenhum.
+    Com record=True, guarda um resumo do que viu pro diagnóstico."""
+    candidates = _collect_chapter_candidates(soup, pattern)
+    if record:
+        _debug_local.candidates_info = _describe_candidates(candidates)
+    if not candidates:
+        return None
+    ranked = sorted(candidates, key=lambda c: c[0], reverse=True)
+    if _is_default_pattern(pattern):
+        # texto padronizado: o número extraído depois é exatamente o certo,
+        # sem se confundir com outros números que estejam no texto bruto
+        seen, parts = set(), []
+        for n, _, _ in ranked:
+            if n not in seen:
+                seen.add(n)
+                parts.append(f"Capítulo {n:g}")
+            if len(parts) >= 5:
+                break
+        return " | ".join(parts)
+    return " | ".join(t for _, t, _ in ranked[:5])
 
 
 # ---------------------------------------------------------------------------
@@ -607,13 +686,16 @@ def discover_chapter_number(soup, json_sources=None, page_url=None):
 
 
 def _extract_from_soup(soup, selector, pattern, json_sources=None, page_url=None):
+    _debug_local.candidates_info = None
     if selector:
         el = soup.select_one(selector)
         if el is not None:
-            return el.get_text(" ", strip=True)
+            txt = el.get_text(" ", strip=True)
+            _debug_local.candidates_info = f"Via seletor CSS manual. Texto lido: '{txt[:80]}'"
+            return txt
         # o seletor não achou nada (site mudou?): segue pra detecção automática
     if pattern:
-        auto_text = auto_detect_chapter_text(soup, pattern)
+        auto_text = auto_detect_chapter_text(soup, pattern, record=True)
         if auto_text:
             return auto_text
     if _is_default_pattern(pattern):
@@ -621,6 +703,7 @@ def _extract_from_soup(soup, selector, pattern, json_sources=None, page_url=None
         if found:
             num, how = found
             print(f"[detect] capítulo {num:g} encontrado via {how}")
+            _debug_local.candidates_info = f"Via {how} (os links/rótulos da página não tinham o número)"
             return f"Capítulo {num:g}"
     return soup.get_text(" ", strip=True)
 
@@ -939,6 +1022,7 @@ def fetch_text_auto(manga):
     navegador headless E, quando não há seletor manual, tentando achar
     sozinho o link de capítulo certo. Retorna (texto, usou_js)."""
     _debug_local.info = None
+    _debug_local.candidates_info = None
     url = manga["url"]
     selector = manga["selector"]
     pattern = manga["chapter_regex"] or DEFAULT_CHAPTER_REGEX
@@ -1049,6 +1133,13 @@ def check_manga(manga_id):
     # Diagnóstico: se mesmo depois de tudo (seletor/JS) não achou nenhum
     # número de capítulo, guarda uma prévia do que foi recebido — ajuda a
     # entender se o problema é bloqueio anti-bot, seletor errado, etc.
+    if chapter_num is not None:
+        how = getattr(_debug_local, "candidates_info", None)
+        conn.execute(
+            "UPDATE mangas SET last_error = ? WHERE id = ?",
+            (f"Capítulo detectado: {chapter_num:g}." + (f"\n{how}" if how else ""), manga_id),
+        )
+
     if chapter_num is None:
         preview = (text or "").strip()[:200]
         msg = f"Nenhum número de capítulo encontrado. Prévia do conteúdo recebido: {preview!r}"

@@ -221,6 +221,11 @@ confiável, e para na primeira que der resultado:
 1. **Seletor CSS manual**, se você preencheu (se ele não achar nada, o app
    não desiste: segue pras próximas).
 2. **Texto dos links** parecido com "Cap. 45", "Capítulo 45", "Chapter 45".
+   Links com bastante texto (título, data, curtidas) também valem: o app lê
+   só o começo deles. Com o regex padrão, ele também lê **rótulos curtos
+   fora de links** ("Capítulo 222" numa linha que não é link, como capítulo
+   bloqueado ou de acesso antecipado), desde que apareçam pelo menos 3
+   capítulos diferentes e não estejam numa área de comentários.
 3. **Abrir a aba "Capítulos"** (modo navegador): se a lista não está na
    página, clica sozinho em abas/botões com nomes tipo "Capítulos",
    "Capítulos (120)", "Chapters", "Episódios".
@@ -237,8 +242,9 @@ confiável, e para na primeira que der resultado:
 As estratégias 5 e 6 só valem com o regex padrão: se você definiu um regex
 próprio numa fonte, o app respeita e não adivinha nada além disso.
 
-**Diagnóstico automático:** se nenhuma estratégia achar o capítulo, o app
-guarda um resumo do que viu (abas e botões, links com número, requisições
+**Diagnóstico automático:** a cada checagem o app guarda como chegou no
+número (quais números viu e de onde vieram) e, se nenhuma estratégia achar o
+capítulo, um resumo do que viu (abas e botões, links com número, requisições
 JSON, se tentou clicar numa aba). Ele aparece na tela **Editar** da fonte,
 em "Último diagnóstico", e também ao passar o mouse no traço (—) da coluna
 "Cap. detectado". É só copiar e mandar pra quem estiver ajudando, sem
