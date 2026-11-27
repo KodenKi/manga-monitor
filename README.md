@@ -228,7 +228,11 @@ confiável, e para na primeira que der resultado:
    capítulos diferentes e não estejam numa área de comentários.
    Com o regex padrão, só vale a **maior sequência de capítulos colados**
    (ex: 215 a 222): números soltos longe dela, de outros títulos na mesma
-   página (recomendados, atualizações recentes), são ignorados.
+   página (recomendados, atualizações recentes), são ignorados. Se a
+   página só tiver números soltos assim (3 ou mais sem sequência), o app
+   entende que a lista real ainda não apareceu: continua tentando (aba,
+   rolagem, navegador) e, se não achar, registra "não achei" em vez de
+   chutar o maior número.
 3. **Abrir a aba "Capítulos"** (modo navegador): se a lista não está na
    página, clica sozinho em abas/botões com nomes tipo "Capítulos",
    "Capítulos (120)", "Chapters", "Episódios".
@@ -373,6 +377,14 @@ Tanto em Configurações (webhook geral) quanto em cada grupo na tela
 inicial tem um botão **"Enviar teste"** / **"Testar"**, que manda uma
 mensagem de exemplo pro Discord na hora — não precisa esperar um capítulo
 de verdade sair pra confirmar que a URL está certa.
+
+## Trava contra números absurdos
+
+Se uma fonte de repente indica um capítulo mais de 40 acima do último
+notificado do grupo (ex: o grupo está no 222 e a página "leu" 299), o app
+desconfia de leitura errada: não avisa no Discord, não muda a referência do
+grupo e escreve o motivo em "Último diagnóstico" da fonte. Se o salto for
+real (lançamento em lote), ajuste o último capítulo do grupo na mão.
 
 ## Corrigir o último capítulo notificado
 

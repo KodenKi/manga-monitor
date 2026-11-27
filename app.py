@@ -77,7 +77,7 @@ app.secret_key = _load_secret_key()
 # atualização); BUILD_ID é calculado sozinho a partir dos arquivos do app e
 # muda sempre que qualquer arquivo mudar, mesmo que a data não tenha sido
 # alterada.
-APP_VERSION = "2026.11.26"
+APP_VERSION = "2026.11.26.2"
 
 
 def _compute_build_id():
@@ -123,7 +123,7 @@ HEADERS = {
                   "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 }
 
-DEFAULT_CHAPTER_REGEX = r"(?:cap[íi]tulo|chapter|cap\.?|epis[oó]dio|ep\.?)\s*[:\-]?\s*(\d+(?:\.\d+)?)"
+DEFAULT_CHAPTER_REGEX = r"\b(?:cap[íi]tulo|chapter|cap\.?|epis[oó]dio|ep\.?)\s*[:\-]?\s*(\d+(?:\.\d+)?)"
 
 
 # ---------------------------------------------------------------------------
@@ -450,8 +450,9 @@ def _main_cluster(nums, max_gap=5):
     """Os capítulos de UM mangá aparecem numa sequência 'colada' (222, 221,
     220...). Números soltos longe dessa sequência costumam ser de outros
     títulos na mesma página (recomendados, atualizações recentes) ou
-    comentários. Devolve os números da maior sequência; se não houver uma
-    sequência clara (menos de 3 números juntos), não filtra nada."""
+    comentários. Devolve os números da maior sequência. Com menos de 3
+    números no total não dá pra julgar e devolve todos; com 3 ou mais sem
+    nenhuma sequência, devolve lista vazia (provável ruído)."""
     vals = sorted(set(nums))
     if len(vals) < 3:
         return vals
@@ -465,7 +466,9 @@ def _main_cluster(nums, max_gap=5):
     clusters.append(cur)
     best = max(clusters, key=lambda c: (len(c), c[-1]))
     if len(best) < 3:
-        return vals
+        # 3 ou mais números, mas nenhum par de vizinhos: são números soltos
+        # (de outros títulos, comentários...), não uma lista de capítulos.
+        return []
     return best
 
 
@@ -483,7 +486,12 @@ def _describe_candidates(candidates, chosen=None):
         f"Maiores números vistos: {top_txt}",
         f"Ordem em que aparecem na página: {order}",
     ]
-    if chosen:
+    if chosen is not None and not chosen:
+        lines.append(
+            "Nenhuma sequência de 3+ capítulos seguidos: os números vistos parecem "
+            "soltos (de outros títulos na página?) e foram ignorados."
+        )
+    elif chosen:
         ignored = sorted({n for n, _, _ in candidates} - set(chosen), reverse=True)
         lines.append(
             f"Sequência usada: {min(chosen):g} a {max(chosen):g} ({len(chosen)} números)"
@@ -505,9 +513,12 @@ def auto_detect_chapter_text(soup, pattern, record=False):
     chosen = _main_cluster([n for n, _, _ in candidates]) if (candidates and default) else None
     if record:
         _debug_local.candidates_info = _describe_candidates(candidates, chosen)
+        _debug_local.rejected_noise = bool(candidates and default and not chosen)
     if not candidates:
         return None
     if default:
+        if not chosen:
+            return None  # só números soltos: não é uma lista de capítulos
         keep = set(chosen)
         ranked = sorted((c for c in candidates if c[0] in keep), key=lambda c: c[0], reverse=True)
         # texto padronizado: o número extraído depois é exatamente o certo,
@@ -726,6 +737,7 @@ def discover_chapter_number(soup, json_sources=None, page_url=None):
 
 def _extract_from_soup(soup, selector, pattern, json_sources=None, page_url=None):
     _debug_local.candidates_info = None
+    _debug_local.rejected_noise = False
     if selector:
         el = soup.select_one(selector)
         if el is not None:
@@ -744,6 +756,11 @@ def _extract_from_soup(soup, selector, pattern, json_sources=None, page_url=None
             print(f"[detect] capítulo {num:g} encontrado via {how}")
             _debug_local.candidates_info = f"Via {how} (os links/rótulos da página não tinham o número)"
             return f"Capítulo {num:g}"
+    if getattr(_debug_local, "rejected_noise", False):
+        # Só havia números soltos (provavelmente de outros títulos). Ler o
+        # texto da página inteira traria esses mesmos números de volta, então
+        # devolve vazio: melhor "não achei" do que um número errado.
+        return ""
     return soup.get_text(" ", strip=True)
 
 
@@ -757,7 +774,8 @@ def fetch_text_simple(url, selector, pattern=None):
 # Textos comuns de abas/botões que escondem a lista de capítulos, tipo
 # "Capítulos", "Capítulos (120)", "Lista de capítulos", "Chapters", "Episódios".
 _CHAPTER_TAB_REGEX = re.compile(
-    r"^\s*(lista de )?(cap[ií]tulos?|chapters?|epis[oó]dios?)(\s*[\(\[]?\s*\d+\s*[\)\]]?)?\s*$",
+    r"^\s*(?:\d+\s*)?(lista de )?(cap[ií]tulos?|caps?\.?|chapters?|epis[oó]dios?)"
+    r"(\s*[\(\[]?\s*\d+\s*[\)\]]?)?\s*$",
     re.IGNORECASE,
 )
 
@@ -1124,6 +1142,21 @@ def send_discord_failure_warning(user_id, manga_name, group_name, group_webhook,
         print(f"[discord] falha ao avisar sobre erro: {e}")
 
 
+# Se uma fonte de repente "pula" mais capítulos que isso em relação ao último
+# notificado do grupo, o app desconfia de leitura errada e não avisa nem
+# altera a referência do grupo (dá pra ajustar na mão pelo grupo).
+MAX_PLAUSIBLE_JUMP = 40
+
+
+def _suspicious_jump_msg(read, current):
+    return (
+        f"Salto suspeito: a página indicou capítulo {read:g}, mas o último "
+        f"notificado do grupo é {current:g} (diferença maior que "
+        f"{MAX_PLAUSIBLE_JUMP}). Ignorado pra não dar aviso falso. Se for real, "
+        f"ajuste o 'Último capítulo notificado' do grupo."
+    )
+
+
 def check_manga(manga_id):
     conn = get_db()
     manga = conn.execute("SELECT * FROM mangas WHERE id = ?", (manga_id,)).fetchone()
@@ -1182,6 +1215,9 @@ def check_manga(manga_id):
     if chapter_num is None:
         preview = (text or "").strip()[:200]
         msg = f"Nenhum número de capítulo encontrado. Prévia do conteúdo recebido: {preview!r}"
+        seen_info = getattr(_debug_local, "candidates_info", None)
+        if seen_info:
+            msg += "\n" + seen_info
         extra = getattr(_debug_local, "info", None)
         if extra:
             msg += "\n" + extra
@@ -1192,7 +1228,14 @@ def check_manga(manga_id):
 
     if is_first_check:
         if chapter_num is not None:
-            bump_group_baseline(conn, user_id, group_name, chapter_num)
+            current = get_group(conn, user_id, group_name)["last_notified_chapter"]
+            if current is not None and chapter_num - current > MAX_PLAUSIBLE_JUMP:
+                conn.execute(
+                    "UPDATE mangas SET last_error = ? WHERE id = ?",
+                    (_suspicious_jump_msg(chapter_num, current), manga_id),
+                )
+            else:
+                bump_group_baseline(conn, user_id, group_name, chapter_num)
         conn.execute(
             "UPDATE mangas SET last_hash = ?, last_checked = ?, last_chapter_seen = ? WHERE id = ?",
             (new_hash, now, chapter_num, manga_id),
@@ -1216,6 +1259,20 @@ def check_manga(manga_id):
             elapsed = (datetime.now() - datetime.fromisoformat(last_notified_at)).total_seconds() / 3600
             recently_notified = elapsed < cooldown_hours
         notify = not recently_notified
+
+    if (
+        notify
+        and chapter_num is not None
+        and group_last_chapter is not None
+        and chapter_num - group_last_chapter > MAX_PLAUSIBLE_JUMP
+    ):
+        # Salto grande demais de uma vez: quase sempre é número lido errado
+        # (e avisar/gravar isso travaria o grupo num número alto demais).
+        notify = False
+        conn.execute(
+            "UPDATE mangas SET last_error = ? WHERE id = ?",
+            (_suspicious_jump_msg(chapter_num, group_last_chapter), manga_id),
+        )
 
     if notify:
         send_discord_notification(user_id, manga["name"], group_name, group["webhook_url"], manga["url"], chapter_num)
